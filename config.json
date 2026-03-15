@@ -1,0 +1,29 @@
+{
+  "channels": {
+    "anuncios": "",
+    "logs": "",
+    "antiscam": ""
+  },
+  "roles": {
+    "staff": ""
+  },
+  "categories": {
+    "tickets": "",
+    "negociacoes": ""
+  },
+  "limits": {
+    "maxActiveAnnouncements": 3,
+    "announcementExpirationDays": 30,
+    "maxNegotiationsPerUser": 5,
+    "escrowRequired": false,
+    "escrowValueThreshold": 500
+  },
+  "antiScam": {
+    "duplicateAccountWarning": true,
+    "maxSameAccountAds": 3,
+    "suspiciousValueThreshold": 500
+  },
+  "features": {
+    "pixVerification": false
+  }
+}
