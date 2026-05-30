@@ -1,18 +1,21 @@
 {
   "channels": {
-    "anuncios": "",
-    "logs": "",
-    "antiscam": ""
+    "anuncios": "ID_CANAL_ANUNCIOS",
+    "logs": "ID_CANAL_LOGS",
+    "review": "ID_CANAL_REVIEW",
+    "antiscam": "ID_CANAL_ANTISCAM",
+    "vendas": "ID_CANAL_VENDAS"
   },
+  "admins": "ID_ROLE_ADMINS",
   "roles": {
-    "staff": ""
+    "staff": "ID_ROLE_STAFF"
   },
   "categories": {
-    "tickets": "",
-    "negociacoes": ""
+    "tickets": "ID_CATEGORY_TICKETS",
+    "negociacoes": "ID_CATEGORY_NEGOCIACOES"
   },
   "limits": {
-    "maxActiveAnnouncements": 3,
+    "maxActiveAnnouncements": 5,
     "announcementExpirationDays": 30,
     "maxNegotiationsPerUser": 5,
     "escrowRequired": false,

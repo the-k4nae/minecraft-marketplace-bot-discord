@@ -1,34 +1,139 @@
 /**
- * embedBuilder.js — v4
+ * embedBuilder.js — v5 (Melhorado)
  *
- * Fixes:
- *  - getSkinUrls agora é export (fix #2)
- *  - DMs com call-to-action e link de volta ao servidor (fix #10)
+ * Melhorias:
+ *  - Palette de cores expandida
+ *  - Funções utilitárias para embeds consistentes
+ *  - Formatação padronizada de textos
  */
 
 import { EmbedBuilder } from "discord.js"
 import { getSkinUrls } from "./minecraftAPI.js"
-import {
-  build, text, sep, section, thumb, box,
-  C2_FLAG, C2_EPHEMERAL,
-} from "./cv2.js"
 
+// Palette principal
 export const COLORS = {
-  PRIMARY: "#5865F2",
-  SUCCESS: "#00D166",
-  DANGER: "#FF4444",
-  WARNING: "#FFA500",
-  INFO: "#7289DA",
-  GOLD: "#FFD700",
-  DARK: "#2C2F33",
-  SOLD: "#9B59B6",
-  EXPIRED: "#95A5A6",
-  ESCROW: "#3498DB",
+  PRIMARY:   "#5865F2",  // Discord blurple
+  SUCCESS:   "#00D166",  // Verde
+  DANGER:    "#FF4444",  // Vermelho
+  WARNING:   "#FFA500",  // Laranja
+  INFO:      "#7289DA",  // Azul claro
+  GOLD:      "#FFD700",  // Dourado
+  DARK:      "#2C2F33",  // Fundo escuro
+  SOLD:      "#9B59B6",  // Roxo
+  EXPIRED:   "#95A5A6",  // Cinza
+  ESCROW:    "#3498DB",  // Azul
+  NEUTRAL:   "#B9BBBE",  // Cinza claro
+  BRANDING:  "#FF7A59",  // Coral (destaque)
+}
+
+// Emojis padronizados por categoria
+export const EMOJIS = {
+  ticket:    "🎫",
+  stats:     "📊",
+  anuncios:  "📢",
+  compra:    "🛒",
+  venda:     "💰",
+  reputacao: "⭐",
+  ranking:   "🏆",
+  alerta:    "🔔",
+  favorito:  "❤️",
+  denuncia:  "🚨",
+  sucesso:   "✅",
+  erro:      "❌",
+  aviso:     "⚠️",
+  info:      "ℹ️",
 }
 
 /** Formata número para moeda BRL, ex: 200 → "200,00", 1500.5 → "1.500,50" */
 export function formatValor(v) {
   return Number(v).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+/**
+ * Cria um embed básico padronizado
+ * @param {Object} options - { title, description, color, footer, thumbnail }
+ * @returns {EmbedBuilder}
+ */
+export function createBaseEmbed({ title, description, color = COLORS.PRIMARY, footer, thumbnail, author }) {
+  const embed = new EmbedBuilder()
+    .setColor(color)
+    .setTimestamp()
+
+  if (title) embed.setTitle(title)
+  if (description) embed.setDescription(description)
+  if (author) embed.setAuthor(author)
+  if (thumbnail) embed.setThumbnail(thumbnail)
+  if (footer) embed.setFooter(footer)
+
+  return embed
+}
+
+/**
+ * Cria embed de sucesso
+ * @param {string} title - Título
+ * @param {string} description - Descrição
+ * @param {string} footerText - Texto do footer (opcional)
+ * @returns {EmbedBuilder}
+ */
+export function createSuccessEmbed(title, description, footerText) {
+  return createBaseEmbed({
+    title,
+    description,
+    color: COLORS.SUCCESS,
+    footer: { text: footerText || "Operação realizada com sucesso" },
+  })
+}
+
+/**
+ * Cria embed de erro
+ * @param {string} title - Título
+ * @param {string} description - Descrição
+ * @returns {EmbedBuilder}
+ */
+export function createErrorEmbed(title, description) {
+  return createBaseEmbed({
+    title,
+    description,
+    color: COLORS.DANGER,
+    footer: { text: "Se precisar de ajuda, abra um ticket" },
+  })
+}
+
+/**
+ * Cria embed de aviso
+ * @param {string} title - Título
+ * @param {string} description - Descrição
+ * @returns {EmbedBuilder}
+ */
+export function createWarningEmbed(title, description) {
+  return createBaseEmbed({
+    title,
+    description,
+    color: COLORS.WARNING,
+  })
+}
+
+/**
+ * Formata texto para exibição (truncar se muito longo)
+ * @param {string} text - Texto
+ * @param {number} maxLength - Tamanho máximo
+ * @returns {string}
+ */
+export function truncateText(text, maxLength = 100) {
+  if (!text) return ""
+  if (text.length <= maxLength) return text
+  return text.substring(0, maxLength) + "..."
+}
+
+/**
+ * Cria campo de embed padronizado
+ * @param {string} name - Nome do campo
+ * @param {string} value - Valor
+ * @param {boolean} inline - Inline
+ * @returns {Object}
+ */
+export function createField(name, value, inline = false) {
+  return { name, value: value || "N/A", inline }
 }
 
 /**
@@ -120,7 +225,7 @@ export function createTicketPanelEmbed(guild) {
     .setFooter({ text: "Selecione o tipo correto · Não abra tickets duplicados" })
     .setTimestamp()
 
-  if (guild?.iconURL()) embed.setThumbnail(guild.iconURL({ dynamic: true, size: 256 }))
+  if (guild?.iconURL()) embed.setThumbnail(guild.iconURL({ extension: "webp", forceStatic: false, size: 256 }))
   return embed
 }
 
@@ -133,7 +238,7 @@ export function createAnnouncementReviewEmbed(data, user) {
   return new EmbedBuilder()
     .setColor(COLORS.WARNING)
     .setTitle("📋 Novo Anúncio para Revisão")
-    .setDescription(`**Vendedor:** ${user.tag} (${user.id})\n**Nick:** ${data.nick}\n**Valor:** R$ ${formatValor(data.valor)}`)
+    .setDescription(`**Vendedor:** ${user.username} (${user.id})\n**Nick:** ${data.nick}\n**Valor:** R$ ${formatValor(data.valor)}`)
     .setThumbnail(skin.avatar)
     .addFields(
       { name: "Bans", value: data.bans || "Não informado", inline: false },
@@ -158,7 +263,7 @@ export function createPublicAnnouncementEmbed(announcement, user, sellerRating) 
     ratingText = `${stars} (${sellerRating.average}/5 — ${sellerRating.count} aval.)`
   }
 
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setColor(COLORS.PRIMARY)
     .setThumbnail(skin.body)
     .setDescription(
@@ -175,6 +280,8 @@ export function createPublicAnnouncementEmbed(announcement, user, sellerRating) 
     )
     .setFooter({ text: `Vendedor: ${user.username} | ID: ${announcement.id}` })
     .setTimestamp()
+  if (announcement.photo_url) embed.setImage(announcement.photo_url)
+  return embed
 }
 
 // ─────────────────────────────────────────────
@@ -297,7 +404,7 @@ export function buildNegotiationInterestDmEmbed(buyer, announcement, channel) {
     .setColor(COLORS.INFO)
     .setTitle("💬 Novo Interesse no seu Anúncio!")
     .setThumbnail(skin.avatar)
-    .setDescription(`**${buyer.tag}** demonstrou interesse na sua conta **${announcement.nick}**!`)
+    .setDescription(`**${buyer.username}** demonstrou interesse na sua conta **${announcement.nick}**!`)
     .addFields(
       { name: "Conta", value: announcement.nick, inline: true },
       { name: "Valor", value: `R$ ${formatValor(announcement.valor)}`, inline: true },
@@ -313,7 +420,7 @@ export function buildTicketClaimedDmEmbed(staffUser, channel, guild) {
     .setTitle("✅ Seu Ticket Foi Assumido")
     .setDescription("Um membro da staff está pronto para atendê-lo!")
     .addFields(
-      { name: "Staff Responsável", value: staffUser.tag, inline: true },
+      { name: "Staff Responsável", value: staffUser.username, inline: true },
       { name: "Canal", value: `${channel}`, inline: false },
       { name: "📌 Ação necessária", value: "Retorne ao canal do ticket para continuar o atendimento.", inline: false },
     )
@@ -327,7 +434,7 @@ export function buildTicketReminderDmEmbed(staffUser, channel, guild) {
     .setTitle("⏰ Lembrete de Ticket")
     .setDescription("A staff está aguardando você no seu ticket!")
     .addFields(
-      { name: "Staff", value: staffUser.tag, inline: true },
+      { name: "Staff", value: staffUser.username, inline: true },
       { name: "Canal", value: `${channel}`, inline: false },
       { name: "📌 Ação necessária", value: "Responda o mais rápido possível para não ter o ticket fechado por inatividade.", inline: false },
     )
@@ -354,234 +461,3 @@ export function buildSaleCompletedDmEmbed(announcement, role, partnerTag, guild)
     .setFooter({ text: guild?.name ?? "Servidor" })
     .setTimestamp()
 }
-
-
-// ─────────────────────────────────────────────
-// COMPONENTS v2 — BUILDERS (retornam ContainerBuilder)
-// ─────────────────────────────────────────────
-
-/** Ticket panel em C2 */
-export function buildTicketPanelC2(guild) {
-  const iconUrl = guild?.iconURL({ dynamic: true, size: 256 })
-  const descText =
-    "## 🎫 Central de Atendimento\n\n" +
-    "Bem-vindo à central de atendimento!\n" +
-    "Selecione uma opção abaixo para abrir um ticket.\n\n" +
-    "🔧 **Suporte** — Ajuda técnica ou problema\n" +
-    "❓ **Dúvidas** — Perguntas sobre o servidor ou vendas\n" +
-    "🚨 **Denúncia** — Reportar usuário ou atividade suspeita\n" +
-    "📢 **Anunciar Conta** — Vender sua conta Minecraft\n\n" +
-    "-# Selecione o tipo correto · Não abra tickets duplicados"
-
-  const children = []
-  if (iconUrl) {
-    children.push(section(descText, thumb(iconUrl)))
-  } else {
-    children.push(text(descText))
-  }
-  return build(children, 0x5865F2)
-}
-
-/** Ticket embed em C2 */
-export function buildTicketC2(type, user, botUser = null) {
-  const typeConfig = {
-    suporte:  { color: 0x5865F2,  label: "🔧 Ticket de Suporte",  desc: "Nossa equipe está pronta para ajudá-lo." },
-    duvidas:  { color: 0x7289DA,  label: "❓ Ticket de Dúvidas",  desc: "Tire suas dúvidas com nossa equipe." },
-    denuncia: { color: 0xFF4444,  label: "🚨 Ticket de Denúncia", desc: "Relate um problema ou denúncia." },
-    anunciar: { color: 0x00D166,  label: "📢 Anunciar Conta",     desc: "Preencha os dados para anunciar sua conta Minecraft." },
-  }
-  const cfg = typeConfig[type] ?? { color: 0x5865F2, label: type, desc: "Ticket criado." }
-  const ts = Math.floor(Date.now() / 1000)
-  const content =
-    `## ${cfg.label}\n\n` +
-    `Olá <@${user.id}>, bem-vindo ao seu ticket!\n${cfg.desc}\n\n` +
-    `👤 **Usuário:** <@${user.id}> (${user.id})\n` +
-    `🏷️ **Tipo:** ${cfg.label}\n` +
-    `📅 **Criado em:** <t:${ts}:F>\n` +
-    `🛠️ **Staff:** Aguardando\n\n` +
-    `-# Use o menu abaixo para gerenciar o ticket`
-  return build([text(content)], cfg.color)
-}
-
-/** Anúncio revisão em C2 (para staff) */
-export function buildAnnouncementReviewC2(data, user) {
-  const skin = getSkinUrls(data.uuid ?? data.nick)
-  const content =
-    `## 📋 Novo Anúncio para Revisão\n\n` +
-    `**Vendedor:** ${user.tag} (${user.id})  **Nick:** ${data.nick}  **Valor:** R$ ${formatValor(data.valor)}\n\n` +
-    `**Bans:** ${data.bans || "Não informado"}\n` +
-    `**Capas:** ${data.capas || "Nenhuma"}   **VIPs:** ${data.vips || "Nenhum"}   **Tags:** ${data.tags || "Nenhuma"}\n` +
-    `**Medalhas:** ${data.medalhas || "Nenhuma"}   **Wins/Level:** ${data.winsLevel ?? data.wins_level ?? "N/A"}   **Cosméticos:** ${data.cosmeticos || "Nenhum"}\n\n` +
-    `-# Revise com atenção antes de aprovar`
-  return build([section(content, thumb(skin.avatar))], 0xFFA500)
-}
-
-/** Anúncio público em C2 */
-export function buildPublicAnnouncementC2(announcement, user, sellerRating) {
-  const namemc = `https://namemc.com/profile/${announcement.uuid}`
-  const skin = getSkinUrls(announcement.uuid)
-  let ratingText = "Sem avaliações"
-  if (sellerRating?.count > 0) {
-    const stars = "★".repeat(Math.round(sellerRating.average)) + "☆".repeat(5 - Math.round(sellerRating.average))
-    ratingText = `${stars} (${sellerRating.average}/5 — ${sellerRating.count} aval.)`
-  }
-  const content =
-    `**Nick:** ${announcement.nick}   **NameMC:** [Ver perfil](${namemc})\n\n` +
-    `**Bans:** ${announcement.bans || "Nenhum"}   **VIPs:** ${announcement.vips || "Nenhum"}   **Tags:** ${announcement.tags || "Nenhuma"}\n` +
-    `**Medalhas:** ${announcement.medalhas || "Nenhuma"}   **Wins:** ${announcement.wins_level || "N/A"}   **Cosméticos:** ${announcement.cosmeticos || "Nenhum"}\n\n` +
-    `💰 **Valor:** R$ ${formatValor(announcement.valor)}\n` +
-    `⭐ **Reputação do Vendedor:** ${ratingText}\n\n` +
-    `-# Vendedor: ${user.username} | ID: ${announcement.id}`
-  return build([section(content, thumb(skin.body))], 0x5865F2)
-}
-
-/** Negociação em C2 */
-export function buildNegotiationC2(announcement, buyer, seller) {
-  const namemc = `https://namemc.com/profile/${announcement.uuid}`
-  const skin = getSkinUrls(announcement.uuid)
-  const content =
-    `## 🤝 Negociação Iniciada\n\n` +
-    `👤 **Comprador:** <@${buyer.id}>   💼 **Vendedor:** <@${seller.id}>\n\n` +
-    `**Conta:** ${announcement.nick}   **NameMC:** [Ver perfil](${namemc})   **Valor:** R$ ${formatValor(announcement.valor)}\n\n` +
-    `**📋 Regras**\n` +
-    `> 1. Não compartilhe informações pessoais\n` +
-    `> 2. Use **"Chamar Staff"** se precisar de intermediário\n` +
-    `> 3. Não faça pagamentos fora do servidor\n` +
-    `> 4. Ao finalizar, use **"Venda Concluída"**\n` +
-    `> 5. Anexe comprovante de pagamento antes de confirmar\n\n` +
-    `-# Proteja-se contra scams — use o sistema de escrow`
-  return build([section(content, thumb(skin.body))], 0x3498DB)
-}
-
-/** Venda concluída em C2 */
-export function buildSaleCompletedC2(announcement, buyer, seller) {
-  const content =
-    `## 🎉 Venda Concluída!\n\n` +
-    `A negociação foi finalizada com sucesso.\n\n` +
-    `**Conta:** ${announcement.nick}   **Valor:** R$ ${formatValor(announcement.valor)}\n` +
-    `**Comprador:** <@${buyer}>   **Vendedor:** <@${seller}>\n\n` +
-    `-# Obrigado! Avalie a transação abaixo.`
-  return build([text(content)], 0x9B59B6)
-}
-
-/** Staff main panel em C2 */
-export function buildStaffPanelC2(guild, stats, pendingCount, suspiciousCount) {
-  const iconUrl = guild?.iconURL({ dynamic: true })
-  const content =
-    `## ⚙️ Painel de Gerenciamento — Staff\n\n` +
-    `Selecione uma seção abaixo para gerenciar o servidor.\n\n` +
-    `**🎫 Tickets**\n` +
-    `> Abertos: **${stats.openTickets}** · Fechados: **${stats.closedTickets}** · Total: **${stats.totalTickets}**\n\n` +
-    `**📢 Anúncios**\n` +
-    `> Pendentes: **${stats.pendingAnnouncements}** ${stats.pendingAnnouncements > 0 ? "⚠️" : "✅"}  Ativos: **${stats.activeAnnouncements}**  Vendidos: **${stats.soldAnnouncements}**\n\n` +
-    `**🤝 Negociações**\n` +
-    `> Ativas: **${stats.totalNegotiations - stats.completedNegotiations}**  Concluídas: **${stats.completedNegotiations}**\n\n` +
-    `**🚨 Atenção**\n` +
-    `> Blacklist: **${stats.blacklistedUsers}** usuários  Suspeitos: **${suspiciousCount}** ${suspiciousCount > 0 ? "⚠️" : "✅"}  Reservas ativas: **${stats.activeReservations ?? 0}**`
-  const children = iconUrl ? [section(content, thumb(iconUrl))] : [text(content)]
-  return build(children, 0x5865F2)
-}
-
-/** Blacklist panel em C2 */
-export function buildBlacklistPanelC2(blacklist) {
-  let content = `## 🚫 Gerenciamento de Blacklist\n\n`
-  if (blacklist.length === 0) {
-    content += "A blacklist está vazia."
-  } else {
-    content += `**${blacklist.length}** usuário(s) bloqueados atualmente.\n\n`
-    for (const entry of blacklist.slice(0, 10)) {
-      const date = new Date(entry.created_at).toLocaleDateString("pt-BR")
-      content += `**<@${entry.user_id}>**\nMotivo: ${entry.reason}  Por: <@${entry.created_by}>  Data: ${date}\n\n`
-    }
-    if (blacklist.length > 10) content += `-# Mostrando 10 de ${blacklist.length} usuários`
-  }
-  return build([text(content)], 0xFF4444)
-}
-
-/** Painel de anúncios do usuário em C2 */
-export function buildMeusAnunciosC2(user, all) {
-  const STATUS_LABEL = { pending: "⏳ Pendente", approved: "✅ Ativo", rejected: "❌ Recusado", sold: "💸 Vendido", expired: "⌛ Expirado" }
-  const active = all.filter(a => a.status === "approved")
-  const pending = all.filter(a => a.status === "pending")
-  const sold = all.filter(a => a.status === "sold")
-  const totalValue = sold.reduce((s, a) => s + parseFloat(a.valor || 0), 0)
-
-  let content =
-    `## 📋 Meus Anúncios\n\n` +
-    `Total: **${all.length}**  ·  Ativos: **${active.length}**  ·  Pendentes: **${pending.length}**  ·  Vendidos: **${sold.length}**\n` +
-    `💰 Valor total vendido: **R$ ${formatValor(totalValue)}**\n\n`
-
-  for (const a of all.slice(0, 10)) {
-    const status = STATUS_LABEL[a.status] || a.status
-    const date = new Date(a.created_at).toLocaleDateString("pt-BR")
-    const bump = a.bumped_at ? `  Bump: <t:${Math.floor(new Date(a.bumped_at).getTime() / 1000)}:R>` : ""
-    content += `**#${a.id} — ${a.nick}** ${status}  R$ ${formatValor(a.valor)}  ${date}${bump}\n`
-  }
-  if (all.length > 10) content += `\n-# Mostrando 10 de ${all.length}`
-  return build([section(content, thumb(user.displayAvatarURL({ dynamic: true })))], 0x5865F2)
-}
-
-/** Detalhe de anúncio em C2 */
-export function buildAnuncioDetailC2(a, reservation, autoBump) {
-  const STATUS_LABEL = { pending: "⏳ Pendente", approved: "✅ Ativo", rejected: "❌ Recusado", sold: "💸 Vendido", expired: "⌛ Expirado" }
-  const skin = getSkinUrls(a.uuid)
-  const status = STATUS_LABEL[a.status] || a.status
-  const bumped = a.bumped_at ? `<t:${Math.floor(new Date(a.bumped_at).getTime() / 1000)}:R>` : "Nunca"
-  const reservaStr = reservation
-    ? `Reservado para <@${reservation.buyer_id}> até <t:${Math.floor(new Date(reservation.expires_at).getTime() / 1000)}:R>`
-    : "Sem reserva"
-
-  const content =
-    `## 📢 Anúncio #${a.id} — ${a.nick}\n\n` +
-    `**Status:** ${status}   **Valor:** R$ ${formatValor(a.valor)}   **Nick:** ${a.nick}\n` +
-    `**VIPs:** ${a.vips || "Nenhum"}   **Capas:** ${a.capas || "Nenhuma"}   **Tags:** ${a.tags || "Nenhuma"}\n` +
-    `**Último Bump:** ${bumped}   **Auto-Bump:** ${autoBump?.active ? "✅ Ativo" : "❌ Inativo"}\n` +
-    `**Reserva:** ${reservaStr}`
-  return build([section(content, thumb(skin.avatar))], 0x5865F2)
-}
-
-/** Alertas do usuário em C2 */
-export function buildAlertasPanelC2(user, alerts) {
-  const avatarUrl = user.displayAvatarURL({ dynamic: true })
-  let content = `## 🔔 Meus Alertas de Interesse\n\n`
-  if (alerts.length === 0) {
-    content += "Você não tem alertas ativos.\n\nCrie um alerta para ser notificado por DM quando um anúncio corresponder aos seus filtros."
-  } else {
-    content += `Você tem **${alerts.length}/10** alertas ativos.\nVocê será notificado por DM quando um novo anúncio corresponder.\n\n`
-    for (const a of alerts.slice(0, 10)) {
-      const f = a.filters
-      const parts = [
-        f.nick ? `Nick contém: \`${f.nick}\`` : null,
-        f.minPrice ? `Mín: R$ ${f.minPrice}` : null,
-        f.maxPrice ? `Máx: R$ ${f.maxPrice}` : null,
-        f.vip ? `VIP/Tag: \`${f.vip}\`` : null,
-      ].filter(Boolean).join("  ·  ")
-      const last = a.last_triggered_at
-        ? `<t:${Math.floor(new Date(a.last_triggered_at).getTime() / 1000)}:R>`
-        : "Nunca disparado"
-      content += `**Alerta #${a.id}** — ${parts || "Qualquer anúncio"}  |  Último disparo: ${last}\n`
-    }
-  }
-  return build([section(content, thumb(avatarUrl))], 0x7289DA)
-}
-
-/** Favoritos em C2 */
-export function buildFavoritosPanelC2(user, favorites) {
-  const avatarUrl = user.displayAvatarURL({ dynamic: true })
-  let content = `## ❤️ Meus Favoritos\n\n`
-  if (favorites.length === 0) {
-    content += "Você não tem anúncios favoritos.\n\nClique em ❤️ em qualquer anúncio para favoritar."
-  } else {
-    content += `Você tem **${favorites.length}** anúncio(s) favoritado(s).\n\n`
-    for (const f of favorites.slice(0, 15)) {
-      const STATUS_ICON = { approved: "✅", pending: "⏳", sold: "💸", rejected: "❌", expired: "⌛" }
-      const icon = STATUS_ICON[f.status] || "❓"
-      content += `${icon} **${f.nick}** — R$ ${formatValor(f.valor)} | ID #${f.id}\n`
-    }
-    if (favorites.length > 15) content += `\n-# Mostrando 15 de ${favorites.length}`
-  }
-  return build([section(content, thumb(avatarUrl))], 0xE74C3C)
-}
-
-// Re-exports for convenient import
-export { build, text, sep, section, thumb, box, C2_FLAG, C2_EPHEMERAL }

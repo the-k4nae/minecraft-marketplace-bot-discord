@@ -10,6 +10,7 @@ import Database from "better-sqlite3"
 import { mkdirSync, readdirSync, statSync, unlinkSync, existsSync, copyFileSync } from "fs"
 import { join, dirname } from "path"
 import { fileURLToPath } from "url"
+import { fileLog } from "./fileLogger.js"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const DB_PATH    = join(__dirname, "..", "bot-data.sqlite")
@@ -19,10 +20,10 @@ const MAX_BACKUPS = 10
 /**
  * Cria backup assíncrono usando a API nativa do better-sqlite3 (transacionalmente seguro).
  */
-export function createBackup() {
+export async function createBackup() {
   try {
     if (!existsSync(DB_PATH)) {
-      console.log("[BACKUP] Arquivo .sqlite não encontrado:", DB_PATH)
+      fileLog.warn({ path: DB_PATH }, "[BACKUP] Arquivo .sqlite não encontrado")
       return null
     }
 
@@ -33,20 +34,17 @@ export function createBackup() {
 
     // Abre em readonly para não interferir com a DB principal
     const source = new Database(DB_PATH, { readonly: true })
-    source.backup(backupPath)
-      .then(() => {
-        console.log(`[BACKUP] ✅ Backup criado: ${backupPath}`)
-        cleanOldBackups()
-        source.close()
-      })
-      .catch((err) => {
-        console.error("[BACKUP] Erro no backup:", err.message)
-        source.close()
-      })
+    try {
+      await source.backup(backupPath)
+      fileLog.info({ backupPath }, "[BACKUP] Backup criado")
+      cleanOldBackups()
+    } finally {
+      source.close()
+    }
 
     return backupPath
   } catch (error) {
-    console.error("[BACKUP] Erro ao iniciar backup:", error.message)
+    fileLog.error({ err: error.message }, "[BACKUP] Erro no backup")
     return null
   }
 }
@@ -65,11 +63,11 @@ export function createBackupSync() {
     const backupPath = join(BACKUP_DIR, `bot-data-${timestamp}.sqlite`)
 
     copyFileSync(DB_PATH, backupPath)
-    console.log(`[BACKUP] ✅ Backup síncrono criado: ${backupPath}`)
+    fileLog.info({ backupPath }, "[BACKUP] Backup síncrono criado")
     cleanOldBackups()
     return backupPath
   } catch (error) {
-    console.error("[BACKUP] Erro no backup síncrono:", error.message)
+    fileLog.error({ err: error.message }, "[BACKUP] Erro no backup síncrono")
     return null
   }
 }
@@ -83,10 +81,10 @@ function cleanOldBackups() {
       .sort((a, b) => b.time - a.time)
     for (const file of files.slice(MAX_BACKUPS)) {
       unlinkSync(file.path)
-      console.log(`[BACKUP] Removido backup antigo: ${file.name}`)
+      fileLog.info({ file: file.name }, "[BACKUP] Removido backup antigo")
     }
   } catch (error) {
-    console.error("[BACKUP] Erro ao limpar backups:", error.message)
+    fileLog.error({ err: error.message }, "[BACKUP] Erro ao limpar backups")
   }
 }
 
@@ -114,10 +112,10 @@ export function getDatabaseSize() {
 }
 
 export function startAutoBackup(intervalHours = 6) {
-  createBackup()
+  createBackup().catch(() => {})
   setInterval(() => {
-    console.log("[BACKUP] Executando backup automático...")
-    createBackup()
+    fileLog.info("[BACKUP] Executando backup automático...")
+    createBackup().catch(() => {})
   }, intervalHours * 3_600_000)
-  console.log(`[BACKUP] Automático configurado a cada ${intervalHours}h.`)
+  fileLog.info({ intervalHours }, "[BACKUP] Automático configurado")
 }

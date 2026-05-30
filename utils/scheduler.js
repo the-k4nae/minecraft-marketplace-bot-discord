@@ -1,35 +1,66 @@
 /**
- * scheduler.js — v4
+ * utils/scheduler.js — v5
  *
- * Tarefas agendadas usando node-cron (horários fixos, sobrevive a restarts).
- * Melhorias:
- *  - Cron real em vez de setInterval (fix #6)
- *  - Auto-close de tickets inativos (fix #13)
- *  - Auto-close + aviso via DM para inatividade
+ * Melhoria v5: prevenção de sobreposição de tarefas (task overlap prevention).
+ *
+ * Problema original: se uma tarefa (ex: checkExpirations) demorar mais que seu
+ * intervalo de agendamento, uma nova instância dela inicia antes da anterior
+ * terminar — causando queries duplicadas, DMs duplicadas e condições de corrida.
+ *
+ * Solução: wrapper `runExclusive(name, fn)` mantém um Set de tarefas em execução.
+ * Se uma tarefa do mesmo nome já está rodando, a nova invocação é ignorada com log.
  */
 
 import cron from "node-cron"
 import {
-  EmbedBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-} from "discord.js"
-import {
   getExpiredAnnouncements, markAnnouncementExpired,
   getSoonExpiringAnnouncements, markExpirationNotified,
-  getAutoBumpsDue, recordAutoBump, getAnnouncement,
+  getAutoBumpsDue, recordAutoBump, bumpAnnouncement, getAnnouncement,
   getUserAverageRating, getExpiredReservations, cancelReservation,
-  getWeeklyStats, saveWeeklyReport, purgeOldLogs, addLog,
+  getWeeklyStats, saveWeeklyReport, purgeOldLogs, purgeOldAnnouncements, addLog,
   getInactiveTicketChannels, markInactivityWarned,
-  getChannelsToAutoClose, closeTicket,
+  getChannelsToAutoClose, closeTicket, getStuckNegotiations, cancelNegotiation,
   purgeExpiredCooldowns, purgeExpiredTempData,
   disableAutoBump, updateAnnouncement, deleteFavoritesByAnnouncement,
+  getExpiredMiddlemanRequests, setMiddlemanResolution,
 } from "./database.js"
-import { formatValor, buildPublicAnnouncementC2 } from "./embedBuilder.js"
+import {
+  CV2, container, text, COLORS, formatValor, buildPublicAnnouncement,
+} from "./components.js"
+import { logAction, sendLogEmbed } from "./logger.js"
+import { fileLog } from "./fileLogger.js"
 import { generateTranscript as genTranscript, sendTranscriptToLogs } from "./transcript.js"
-import { buildFavoriteButton, notifyFavoritersOnBump } from "../handlers/favoritosHandler.js"
-import { C2_FLAG } from "./cv2.js"
+import { notifyFavoritersOnBump } from "../handlers/favoritosHandler.js"
+import { checkNegotiationTimeouts } from "./negotiationTimeout.js"
+
+// ─── Task exclusion lock ─────────────────────────────────────────────────────
+
+const _running = new Set()
+
+/**
+ * Executa uma tarefa de forma exclusiva: se já estiver rodando, pula e loga.
+ * @param {string} name — Nome único da tarefa
+ * @param {Function} fn — Função assíncrona
+ */
+async function runExclusive(name, fn) {
+  if (_running.has(name)) {
+    fileLog.warn({ task: name }, "[SCHEDULER] Tarefa ainda em execução — pulando")
+    return
+  }
+  _running.add(name)
+  const start = Date.now()
+  try {
+    await fn()
+  } catch (err) {
+    fileLog.error({ task: name, err: err.message }, "[SCHEDULER] Erro na tarefa")
+  } finally {
+    _running.delete(name)
+    const elapsed = Date.now() - start
+    if (elapsed > 5_000) {
+      fileLog.warn({ task: name, elapsed }, "[SCHEDULER] Tarefa demorou muito")
+    }
+  }
+}
 
 // ─────────────────────────────────────────────
 // EXPIRAÇÃO DE ANÚNCIOS — a cada hora
@@ -39,60 +70,41 @@ async function checkExpirations(client) {
   const config = client.config
   const expirationDays = config.limits?.announcementExpirationDays ?? 30
 
-  // Expirar anúncios vencidos
   const expired = getExpiredAnnouncements(expirationDays)
   for (const announcement of expired) {
     markAnnouncementExpired(announcement.id)
-    // FIX S-4: Limpar favoritos do anúncio expirado
     try { deleteFavoritesByAnnouncement(announcement.id) } catch { /* ok */ }
     addLog("announcement_expired", "system", String(announcement.id), `${announcement.nick} expirado após ${expirationDays} dias`)
 
-    // Remover do canal de anúncios
     try {
-      const ch = await client.channels.fetch(config.channels.anuncios)
+      const ch  = await client.channels.fetch(config.channels.anuncios)
       const msg = await ch.messages.fetch(announcement.message_id).catch(() => null)
       if (msg) await msg.delete()
     } catch { /* ok */ }
 
-    // DM ao vendedor
     try {
       const seller = await client.users.fetch(announcement.user_id)
-      await seller.send({
-        embeds: [new EmbedBuilder()
-          .setColor("#FF6B6B")
-          .setTitle("⌛ Anúncio Expirado")
-          .setDescription(`Seu anúncio da conta **${announcement.nick}** expirou após **${expirationDays} dias**.\nCrie um novo anúncio pelo sistema de tickets se ainda deseja vender.`)
-          .addFields(
-            { name: "Conta", value: announcement.nick, inline: true },
-            { name: "Valor", value: `R$ ${formatValor(announcement.valor)}`, inline: true },
-          )
-          .setFooter({ text: "Use o painel de tickets para reanunciar" })
-          .setTimestamp()],
-      })
+      const ec = container(COLORS.DANGER)
+        .addTextDisplayComponents(text(
+          `## ⌛ Anúncio Expirado\nSeu anúncio **${announcement.nick}** expirou após **${expirationDays} dias**.\nCrie um novo anúncio pelo painel de tickets.\n\n**Conta:** ${announcement.nick}  ·  **Valor:** R$ ${formatValor(announcement.valor)}\n-# Use o painel de tickets para reanunciar`
+        ))
+      await seller.send({ components: [ec] })
     } catch { /* DM fechada */ }
   }
-  if (expired.length) console.log(`[SCHEDULER] ${expired.length} anúncio(s) expirado(s)`)
+  if (expired.length) fileLog.info({ count: expired.length }, "[SCHEDULER] Anúncios expirados")
 
-  // Aviso 3 dias antes de expirar
+  // Aviso 3 dias antes
   const soonExpiring = getSoonExpiringAnnouncements(expirationDays, 3)
   for (const announcement of soonExpiring) {
-    const refDate = announcement.bumped_at || announcement.created_at
-    const daysLeft = Math.ceil(expirationDays - ((Date.now() - new Date(refDate).getTime()) / 86_400_000))
     try {
-      const seller = await client.users.fetch(announcement.user_id)
-      await seller.send({
-        embeds: [new EmbedBuilder()
-          .setColor("#FFA500")
-          .setTitle("⚠️ Anúncio Perto de Expirar")
-          .setDescription(`Seu anúncio de **${announcement.nick}** expira em **${daysLeft} dia(s)**!\nFaça um bump no seu anúncio pelo menu **/meusanuncios** para renovar o prazo.`)
-          .addFields(
-            { name: "Dias Restantes", value: String(daysLeft), inline: true },
-            { name: "Valor", value: `R$ ${formatValor(announcement.valor)}`, inline: true },
-          )
-          .setTimestamp()],
-      })
       markExpirationNotified(announcement.id)
-    } catch { markExpirationNotified(announcement.id) }
+      const seller = await client.users.fetch(announcement.user_id)
+      const wc = container(COLORS.WARNING)
+        .addTextDisplayComponents(text(
+          `## ⚠️ Anúncio Expirando em Breve\nSeu anúncio **${announcement.nick}** vai expirar em aproximadamente **3 dias**.\nFaça um bump para renovar por mais ${expirationDays} dias.`
+        ))
+      await seller.send({ components: [wc] })
+    } catch { /* DM fechada */ }
   }
 }
 
@@ -101,51 +113,39 @@ async function checkExpirations(client) {
 // ─────────────────────────────────────────────
 
 async function processAutoBumps(client) {
-  const due = getAutoBumpsDue()
-  if (!due.length) return
-
-  console.log(`[AUTOBUMP] Processando ${due.length} bump(s)...`)
   const config = client.config
+  const autoBumps = getAutoBumpsDue()
 
-  for (const autoBump of due) {
-    const announcement = getAnnouncement(autoBump.announcement_id)
-    if (!announcement || announcement.status !== "approved") {
-      disableAutoBump(autoBump.announcement_id)
-      continue
-    }
-
+  for (const autoBump of autoBumps) {
     try {
-      const announcementChannel = await client.channels.fetch(config.channels.anuncios)
-      try {
-        const old = await announcementChannel.messages.fetch(announcement.message_id)
-        await old.delete()
-      } catch { /* ok */ }
+      const announcement = getAnnouncement(autoBump.announcement_id)
+      if (!announcement || announcement.status !== "approved") {
+        disableAutoBump(autoBump.announcement_id)
+        continue
+      }
 
-      const seller = await client.users.fetch(announcement.user_id)
-      const sellerRating = getUserAverageRating(announcement.user_id)
-      const namemc = `https://namemc.com/profile/${announcement.uuid}`
+      recordAutoBump(autoBump.announcement_id)
 
-      const bumpContainer = buildPublicAnnouncementC2(announcement, seller, sellerRating)
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`interest_${announcement.id}`).setLabel("Tenho Interesse").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setURL(namemc).setLabel("Ver no NameMC").setStyle(ButtonStyle.Link),
-        buildFavoriteButton(announcement.id),
-      )
+      const ch = await client.channels.fetch(config.channels.anuncios).catch(() => null)
+      if (!ch) continue
 
-      const newMsg = await announcementChannel.send({ components: [appendRows(bumpContainer, row)], flags: C2_FLAG })
-      recordAutoBump(announcement.id)
+      const oldMsg = announcement.message_id
+        ? await ch.messages.fetch(announcement.message_id).catch(() => null)
+        : null
+      if (oldMsg) await oldMsg.delete().catch(() => {})
 
-      // Atualizar message_id no banco
+      const rating    = getUserAverageRating(announcement.user_id)
+      const seller    = await client.users.fetch(announcement.user_id).catch(() => ({ username: announcement.nick }))
+      const pub       = buildPublicAnnouncement(announcement, seller, rating)
+      const newMsg    = await ch.send(pub)
+
       updateAnnouncement(announcement.id, { message_id: newMsg.id })
-
-      // Notificar favoritadores do bump
-      notifyFavoritersOnBump(client, getAnnouncement(announcement.id)).catch(() => {})
-
-      addLog("announcement_bumped", "autobump", String(announcement.id), `Auto-bump: ${announcement.nick}`)
+      await notifyFavoritersOnBump(client, announcement.id, announcement)
     } catch (err) {
-      console.error(`[AUTOBUMP] Erro ao bumpar ${autoBump.announcement_id}:`, err.message)
+      fileLog.error({ announcementId: announcement?.id, err: err.message }, "[SCHEDULER] Erro no auto-bump")
     }
   }
+  if (autoBumps.length) fileLog.info({ count: autoBumps.length }, "[SCHEDULER] Auto-bump concluído")
 }
 
 // ─────────────────────────────────────────────
@@ -154,208 +154,218 @@ async function processAutoBumps(client) {
 
 async function checkReservations(client) {
   const expired = getExpiredReservations()
-  const config = client.config
-
-  for (const reservation of expired) {
-    cancelReservation(reservation.id)
-    const announcement = getAnnouncement(reservation.announcement_id)
-    if (!announcement || announcement.status !== "approved") continue
+  for (const res of expired) {
+    cancelReservation(res.id)
+    addLog("reservation_expired", "system", String(res.id), `Reserva do anúncio #${res.announcement_id} expirou`)
 
     try {
-      const ch = await client.channels.fetch(config.channels.anuncios)
-      const msg = await ch.messages.fetch(announcement.message_id).catch(() => null)
-      if (msg) {
-        const namemc = `https://namemc.com/profile/${announcement.uuid}`
-        const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId(`interest_${announcement.id}`).setLabel("Tenho Interesse").setStyle(ButtonStyle.Success),
-          new ButtonBuilder().setURL(namemc).setLabel("Ver no NameMC").setStyle(ButtonStyle.Link),
-          buildFavoriteButton(announcement.id),
-        )
-        await msg.edit({ components: [row] })
-      }
-    } catch { /* ok */ }
-
-    try {
-      const seller = await client.users.fetch(reservation.seller_id)
-      await seller.send({
-        embeds: [new EmbedBuilder()
-          .setColor("#FFA500")
-          .setTitle("🔓 Reserva Expirada")
-          .setDescription(`A reserva da conta **${announcement.nick}** expirou. O anúncio voltou a ficar disponível para todos.`)
-          .setTimestamp()],
-      })
-    } catch { /* ok */ }
-
-    addLog("reservation_expired", "system", String(reservation.announcement_id), `Reserva expirada: ${announcement.nick}`)
+      const buyer = await client.users.fetch(res.buyer_id)
+      const rc = container(COLORS.DANGER)
+        .addTextDisplayComponents(text(
+          `## ⌛ Reserva Expirada\nA reserva do anúncio **#${res.announcement_id}** expirou. O anúncio está disponível novamente.`
+        ))
+      await buyer.send({ components: [rc] })
+    } catch { /* DM fechada */ }
   }
 }
 
 // ─────────────────────────────────────────────
-// AUTO-CLOSE POR INATIVIDADE (fix #13) — a cada hora
+// MIDDLEMAN EXPIRADO — a cada 5 minutos
+// ─────────────────────────────────────────────
+
+async function expireMiddlemanRequests(client) {
+  const timeoutMinutes = client.config.limits?.middlemanTimeoutMinutes ?? 15
+  const expired = getExpiredMiddlemanRequests(timeoutMinutes)
+
+  for (const neg of expired) {
+    setMiddlemanResolution(neg.ticket_channel_id, null, "expired", "Tempo de resposta da staff esgotado")
+    addLog("middleman_expired", "system", String(neg.id), "Solicitação de middleman expirou")
+
+    try {
+      const ch = await client.channels.fetch(neg.ticket_channel_id).catch(() => null)
+      if (ch) {
+        const mc = container(COLORS.DANGER)
+          .addTextDisplayComponents(text(
+            `## ⌛ Middleman Expirado\nA solicitação de intermediário não foi atendida pela staff dentro do prazo. Prossiga a negociação normalmente ou abra um ticket de suporte.`
+          ))
+        await ch.send({ flags: CV2, components: [mc] })
+      }
+    } catch { /* ok */ }
+  }
+}
+
+// ─────────────────────────────────────────────
+// INATIVIDADE DE TICKETS — a cada 30 minutos
 // ─────────────────────────────────────────────
 
 async function checkInactiveTickets(client) {
   const config = client.config
+  const inactiveHours  = config.limits?.ticketInactivityHours  ?? 48
+  const autoCloseHours = config.limits?.ticketAutoCloseHours   ?? 24
 
-  // Tickets sem mensagem há 48h → avisar
-  const inactive = getInactiveTicketChannels(48)
-  for (const entry of inactive) {
+  // Aviso de inatividade
+  const inactiveChannels = getInactiveTicketChannels(inactiveHours)
+  for (const row of inactiveChannels) {
     try {
-      const channel = await client.channels.fetch(entry.channel_id).catch(() => null)
-      if (!channel) { markInactivityWarned(entry.channel_id); continue }
+      const ch = await client.channels.fetch(row.channel_id).catch(() => null)
+      if (!ch) continue
 
-      const warnEmbed = new EmbedBuilder()
-        .setColor("#FFA500")
-        .setTitle("⚠️ Ticket Inativo")
-        .setDescription(
-          `Este ticket está inativo há **48 horas**.\n\n` +
-          `Ele será **fechado automaticamente em 24 horas** se não houver resposta.\n` +
-          `Se ainda precisar de atendimento, envie uma mensagem aqui.`
-        )
-        .setFooter({ text: "Feche o ticket manualmente se não precisar mais" })
-        .setTimestamp()
+      markInactivityWarned(row.channel_id)
+      const ic = container(COLORS.WARNING)
+        .addTextDisplayComponents(text(
+          `## ⚠️ Ticket Inativo\n<@${row.user_id}> Este ticket está inativo há mais de **${inactiveHours}h**.\nSe não houver resposta em **${autoCloseHours}h**, será fechado automaticamente.`
+        ))
+      await ch.send({ flags: CV2, components: [ic] })
+    } catch { /* ok */ }
+  }
 
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId("close_ticket")
-          .setLabel("Fechar Ticket")
-          .setStyle(ButtonStyle.Danger),
-      )
+  // Auto-close após aviso
+  const toClose = getChannelsToAutoClose(autoCloseHours)
+  for (const row of toClose) {
+    try {
+      const ch = await client.channels.fetch(row.channel_id).catch(() => null)
+      if (!ch) continue
 
-      await channel.send({
-        content: `<@${entry.user_id}>`,
-        embeds: [warnEmbed],
-        components: [row],
-      })
+      closeTicket(row.channel_id)
+      const transcript = await genTranscript(ch)
+      const cc = container(COLORS.DANGER)
+        .addTextDisplayComponents(text(
+          `## 🔒 Ticket Fechado por Inatividade\nEste ticket foi fechado automaticamente por inatividade.`
+        ))
+      await ch.send({ flags: CV2, components: [cc] })
 
-      markInactivityWarned(entry.channel_id)
-      addLog("ticket_inactivity_warned", "system", entry.channel_id, "Aviso de inatividade enviado")
-      console.log(`[SCHEDULER] Aviso de inatividade enviado: #${channel.name}`)
+      await sendTranscriptToLogs(client, ch, transcript, "auto-fechamento por inatividade")
+      await ch.delete().catch(() => {})
     } catch (err) {
-      console.error(`[SCHEDULER] Erro ao avisar inatividade ${entry.channel_id}:`, err.message)
+      fileLog.error({ channelId: row.channel_id, err: err.message }, "[SCHEDULER] Erro ao fechar ticket inativo")
     }
   }
 
-  // Tickets que já foram avisados há 24h → fechar automaticamente
-  const toClose = getChannelsToAutoClose(24)
-  for (const entry of toClose) {
-    try {
-      const channel = await client.channels.fetch(entry.channel_id).catch(() => null)
-      if (!channel) { closeTicket(entry.channel_id); continue }
-
-      // Gerar transcript
-      const transcript = await genTranscript(channel)
-      if (transcript && config.channels.logs) {
-        await sendTranscriptToLogs(client, config.channels.logs, transcript, channel.name, "Sistema (inatividade)")
-      }
-
-      await channel.send({
-        embeds: [new EmbedBuilder()
-          .setColor("#FF4444")
-          .setTitle("🔒 Ticket Fechado por Inatividade")
-          .setDescription("Este ticket foi fechado automaticamente após **72 horas de inatividade**.\nO transcript foi salvo nos logs.")
-          .setTimestamp()],
-      })
-
-      closeTicket(entry.channel_id)
-      addLog("ticket_auto_closed", "system", entry.channel_id, "Fechado por inatividade")
-
-      setTimeout(async () => {
-        try { await channel.delete() } catch { /* ok */ }
-      }, 5000)
-
-      console.log(`[SCHEDULER] Ticket auto-fechado por inatividade: #${channel.name}`)
-    } catch (err) {
-      console.error(`[SCHEDULER] Erro ao auto-fechar ${entry.channel_id}:`, err.message)
-    }
+  if (inactiveChannels.length || toClose.length) {
+    fileLog.info({ warned: inactiveChannels.length, closed: toClose.length }, "[SCHEDULER] Inatividade de tickets processada")
   }
 }
 
 // ─────────────────────────────────────────────
-// RELATÓRIO SEMANAL — domingo às 09:00
+// RELATÓRIO SEMANAL — domingo 9h
 // ─────────────────────────────────────────────
 
 async function sendWeeklyReport(client) {
   const config = client.config
-  if (!config.channels?.logs) return
-
   const stats = getWeeklyStats()
   saveWeeklyReport(stats)
 
-  const topSellerText = stats.topSeller ? `<@${stats.topSeller[0]}> (${stats.topSeller[1]} vendas)` : "Nenhum"
+  const fields = [
+    { name: "🎫 Tickets",       value: `Novos: ${stats.newTickets} | Fechados: ${stats.closedTickets}`, inline: false },
+    { name: "📢 Anúncios",      value: `Novos: ${stats.newAnnouncements} | Aprovados: ${stats.approvedAds} | Vendidos: ${stats.soldCount}`, inline: false },
+    { name: "💰 Volume",        value: `R$ ${stats.totalRevenue}`, inline: true },
+    { name: "🤝 Negociações",   value: `${stats.newNegotiations} (${stats.completedNegs} concluídas)`, inline: true },
+    { name: "⭐ Avaliação",     value: `${stats.avgRating} ★ (${stats.newRatings} avaliações)`, inline: true },
+  ]
 
-  const embed = new EmbedBuilder()
-    .setColor("#5865F2")
-    .setTitle("📊 Relatório Semanal Automático")
-    .setDescription("Resumo das atividades dos últimos **7 dias**")
-    .addFields(
-      { name: "🎫 Tickets", value: `Novos: **${stats.newTickets}** · Fechados: **${stats.closedTickets}**`, inline: false },
-      { name: "📢 Anúncios", value: `Novos: **${stats.newAnnouncements}** · Aprovados: **${stats.approvedAds}** · Vendidos: **${stats.soldCount}**`, inline: false },
-      { name: "💰 Volume Negociado", value: `R$ **${stats.totalRevenue}** em **${stats.completedNegs}** venda(s)`, inline: false },
-      { name: "🤝 Negociações", value: `Abertas: **${stats.newNegotiations}** · Concluídas: **${stats.completedNegs}**`, inline: false },
-      { name: "⭐ Avaliações", value: `Total: **${stats.newRatings}** · Média: **${stats.avgRating}**`, inline: false },
-      { name: "🏆 Top Vendedor", value: topSellerText, inline: false },
-    )
-    .setFooter({ text: "Gerado automaticamente todo domingo às 09:00" })
-    .setTimestamp()
+  if (stats.topSeller) {
+    fields.push({ name: "🏆 Top Vendedor", value: `<@${stats.topSeller[0]}> — ${stats.topSeller[1]} venda(s)`, inline: false })
+  }
 
-  try {
-    const ch = await client.channels.fetch(config.channels.logs)
-    await ch.send({ embeds: [embed] })
-    console.log("[SCHEDULER] Relatório semanal enviado!")
-  } catch (err) {
-    console.error("[SCHEDULER] Erro ao enviar relatório semanal:", err.message)
+  await sendLogEmbed(client, {
+    title:  "Relatório Semanal",
+    fields,
+    color:  "#5865F2",
+  }).catch(() => {})
+
+  // DM para admins configurados
+  const adminIds = Array.isArray(config.admins) ? config.admins : []
+  if (!adminIds.length) return
+
+  const reportText =
+    `## 📊 Relatório Semanal — ${new Date().toLocaleDateString("pt-BR")}\n` +
+    `🎫 **Tickets:** ${stats.newTickets} novos · ${stats.closedTickets} fechados\n` +
+    `📢 **Anúncios:** ${stats.newAnnouncements} novos · ${stats.approvedAds} aprovados · ${stats.soldCount} vendidos\n` +
+    `💰 **Volume:** R$ ${stats.totalRevenue}\n` +
+    `🤝 **Negociações:** ${stats.newNegotiations} abertas · ${stats.completedNegs} concluídas\n` +
+    `⭐ **Avaliação média:** ${stats.avgRating} \u2605 (${stats.newRatings} avaliações)` +
+    (stats.topSeller ? `\n🏆 **Top vendedor:** <@${stats.topSeller[0]}> — ${stats.topSeller[1]} venda(s)` : "")
+
+  for (const adminId of adminIds) {
+    try {
+      const admin = await client.users.fetch(adminId)
+      await admin.send({
+        flags: CV2,
+        components: [
+          container(0x5865F2).addTextDisplayComponents(text(reportText))
+        ],
+      })
+    } catch { /* DM fechada ou admin não encontrado */ }
   }
 }
 
 // ─────────────────────────────────────────────
-// REGISTRO DE TODOS OS JOBS
+// MANUTENÇÃO DIÁRIA — 2h
+// ─────────────────────────────────────────────
+
+async function dailyMaintenance() {
+  purgeOldLogs(90)
+  purgeExpiredCooldowns()
+  purgeExpiredTempData()
+  const purgeDays = 90
+  const purgedAnns = purgeOldAnnouncements(purgeDays)
+  if (purgedAnns > 0) fileLog.info({ count: purgedAnns, days: purgeDays }, "[SCHEDULER] Anúncios antigos removidos")
+  fileLog.info("[SCHEDULER] Manutenção diária concluída")
+}
+
+// ─────────────────────────────────────────────
+// NEGOCIAÇÕES TRAVADAS — 3h
+// ─────────────────────────────────────────────
+
+async function cleanStuckNegotiations(client) {
+  const stuck = getStuckNegotiations()
+  for (const neg of stuck) {
+    cancelNegotiation(neg.ticket_channel_id)
+    addLog("negotiation_stuck_cancelled", "system", String(neg.id), "Cancelada por travamento (sem atividade)")
+  }
+  if (stuck.length) fileLog.info({ count: stuck.length }, "[SCHEDULER] Negociações travadas canceladas")
+}
+
+// ─────────────────────────────────────────────
+// REGISTRO DE TAREFAS
 // ─────────────────────────────────────────────
 
 export function startSchedulers(client) {
-  // Expirações — todo início de hora
-  cron.schedule("0 * * * *", () => checkExpirations(client).catch(console.error), { timezone: "America/Sao_Paulo" })
+  // Expiração de anúncios — a cada hora (minuto 0)
+  cron.schedule("0 * * * *", () =>
+    runExclusive("checkExpirations", () => checkExpirations(client)), { timezone: "America/Sao_Paulo" })
 
   // Auto bump — a cada 30 minutos
-  cron.schedule("*/30 * * * *", () => processAutoBumps(client).catch(console.error))
+  cron.schedule("*/30 * * * *", () =>
+    runExclusive("processAutoBumps", () => processAutoBumps(client)), { timezone: "America/Sao_Paulo" })
 
   // Reservas expiradas — a cada 5 minutos
-  cron.schedule("*/5 * * * *", () => checkReservations(client).catch(console.error))
+  cron.schedule("*/5 * * * *", () =>
+    runExclusive("checkReservations", () => checkReservations(client)), { timezone: "America/Sao_Paulo" })
 
-  // Tickets inativos — a cada hora (minuto 30)
-  cron.schedule("30 * * * *", () => checkInactiveTickets(client).catch(console.error), { timezone: "America/Sao_Paulo" })
+  // Middleman expirado — a cada 5 minutos
+  cron.schedule("*/5 * * * *", () =>
+    runExclusive("expireMiddlemanRequests", () => expireMiddlemanRequests(client)), { timezone: "America/Sao_Paulo" })
 
-  // Relatório semanal — domingo às 09:00
-  cron.schedule("0 9 * * 0", () => sendWeeklyReport(client).catch(console.error), { timezone: "America/Sao_Paulo" })
+  // Inatividade de tickets — a cada 30 minutos (minuto 30)
+  cron.schedule("30 * * * *", () =>
+    runExclusive("checkInactiveTickets", () => checkInactiveTickets(client)), { timezone: "America/Sao_Paulo" })
 
-  // Purge de cooldowns expirados — todo dia às 02:00
-  cron.schedule("0 2 * * *", () => {
-    purgeExpiredCooldowns()
-  }, { timezone: "America/Sao_Paulo" })
+  // Relatório semanal — domingo 9h
+  cron.schedule("0 9 * * 0", () =>
+    runExclusive("sendWeeklyReport", () => sendWeeklyReport(client)), { timezone: "America/Sao_Paulo" })
 
-  // Purge de temp_modal_data expirados — todo dia às 02:30
-  cron.schedule("30 2 * * *", () => {
-    purgeExpiredTempData()
-  }, { timezone: "America/Sao_Paulo" })
+  // Manutenção — 2h da manhã
+  cron.schedule("0 2 * * *", () =>
+    runExclusive("dailyMaintenance", dailyMaintenance), { timezone: "America/Sao_Paulo" })
 
-  // Purge de logs — todo dia às 03:00
-  cron.schedule("0 3 * * *", () => {
-    const removed = purgeOldLogs(90)
-    if (removed) console.log(`[SCHEDULER] Purge: ${removed} logs removidos`)
-  }, { timezone: "America/Sao_Paulo" })
+  // Negociações travadas — 3h da manhã
+  cron.schedule("0 3 * * *", () =>
+    runExclusive("cleanStuckNegotiations", () => cleanStuckNegotiations(client)), { timezone: "America/Sao_Paulo" })
 
-  // Executar imediatamente ao iniciar
-  checkExpirations(client).catch(console.error)
-  processAutoBumps(client).catch(console.error)
-  checkReservations(client).catch(console.error)
-  checkInactiveTickets(client).catch(console.error)
+    // Timeout de compradores inativos — a cada 30min (minutos 15 e 45, intercalado com outros jobs)
+    cron.schedule("15,45 * * * *", () =>
+      runExclusive("checkNegotiationTimeouts", () => checkNegotiationTimeouts(client)), { timezone: "America/Sao_Paulo" })
 
-  console.log("[SCHEDULER] Todos os jobs agendados com node-cron ✓")
+  fileLog.info("[SCHEDULER] Tarefas agendadas com proteção anti-sobreposição.")
 }
-
-// Compat com index.js antigo
-export const startExpirationChecker = (client) => {}
-export const startAutoBumpProcessor = (client) => {}
-export const startReservationChecker = (client) => {}
-export const startWeeklyReport = (client) => {}
-export const startLogPurge = () => {}

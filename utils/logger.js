@@ -1,274 +1,254 @@
-import { EmbedBuilder } from "discord.js"
+import { fileLog } from "./fileLogger.js"
+import { CV2, container, text, separator, section, thumbnail } from "./components.js"
 
-/**
- * Cores por tipo de log
- */
+// Cores por tipo de log
 const LOG_COLORS = {
-  // Tickets
-  ticket_created: "#5865F2",
-  ticket_closed: "#FF6B6B",
-  ticket_claimed: "#00D166",
-  ticket_call_created: "#7289DA",
-
-  // Anuncios
-  announcement_created: "#FFA500",
-  announcement_approved: "#00FF00",
-  announcement_rejected: "#FF0000",
-  announcement_expired: "#FF6B6B",
-  announcement_bumped: "#5865F2",
-  announcement_edited: "#FFA500",
-
-  // Negociacoes
-  negotiation_started: "#5865F2",
-  negotiation_completed: "#00FF00",
-  negotiation_cancelled: "#FF0000",
-  sale_completed: "#00D166",
-
-  // Moderacao
-  blacklist_add: "#FF0000",
-  blacklist_remove: "#00FF00",
-  staff_called: "#FFA500",
-
-  // Avaliacoes
-  rating_created: "#FFD700",
-
-  // Anti-Scam
-  duplicate_account_detected: "#FF0000",
-  suspicious_activity: "#FFA500",
-  escrow_confirmed: "#00D166",
-
-  // Sistema
-  bot_started: "#00FF00",
-  bot_stopped: "#FF6B6B",
-  error: "#FF0000",
-  warning: "#FFA500",
+  ticket_created:      0x5865F2,
+  ticket_closed:       0xFF6B6B,
+  ticket_claimed:      0x00D166,
+  ticket_call_created: 0x7289DA,
+  announcement_created:  0xFFA500,
+  announcement_approved: 0x00D166,
+  announcement_rejected: 0xFF4444,
+  announcement_expired:  0xFF6B6B,
+  announcement_bumped:   0x5865F2,
+  announcement_edited:   0xFFA500,
+  announcement_deleted:  0xAAAAAA,
+  negotiation_started:   0x5865F2,
+  negotiation_completed: 0x00D166,
+  negotiation_cancelled: 0xFF4444,
+  sale_completed:        0x00D166,
+  blacklist_add:    0xFF0000,
+  blacklist_remove: 0x00D166,
+  staff_called:     0xFFA500,
+  rating_created: 0xFFD700,
+  duplicate_account_detected: 0xFF0000,
+  suspicious_activity:        0xFFA500,
+  escrow_confirmed:           0x00D166,
+  bot_started: 0x00D166,
+  bot_stopped: 0xFF6B6B,
+  error:       0xFF0000,
+  warning:     0xFFA500,
+  config_changed:            0x5865F2,
+  announcement_panel_setup:  0xFFA500,
 }
 
-/**
- * Icones por tipo de log
- */
 const LOG_ICONS = {
-  ticket_created: "TICKET",
-  ticket_closed: "TICKET",
-  ticket_claimed: "TICKET",
-  ticket_call_created: "TICKET",
-  announcement_created: "ANUNCIO",
-  announcement_approved: "ANUNCIO",
-  announcement_rejected: "ANUNCIO",
-  announcement_expired: "ANUNCIO",
-  announcement_bumped: "ANUNCIO",
-  announcement_edited: "ANUNCIO",
-  negotiation_started: "NEGOCIACAO",
-  negotiation_completed: "NEGOCIACAO",
-  negotiation_cancelled: "NEGOCIACAO",
-  sale_completed: "VENDA",
-  blacklist_add: "MODERACAO",
-  blacklist_remove: "MODERACAO",
-  staff_called: "MODERACAO",
-  rating_created: "AVALIACAO",
-  duplicate_account_detected: "ANTI-SCAM",
-  suspicious_activity: "ANTI-SCAM",
-  escrow_confirmed: "ESCROW",
-  bot_started: "SISTEMA",
-  bot_stopped: "SISTEMA",
-  error: "ERRO",
-  warning: "AVISO",
+  ticket_created:      "🎫 TICKET",
+  ticket_closed:       "🎫 TICKET",
+  ticket_claimed:      "🎫 TICKET",
+  ticket_call_created: "🎫 TICKET",
+  announcement_created:  "📢 ANÚNCIO",
+  announcement_approved: "📢 ANÚNCIO",
+  announcement_rejected: "📢 ANÚNCIO",
+  announcement_expired:  "📢 ANÚNCIO",
+  announcement_bumped:   "📢 ANÚNCIO",
+  announcement_edited:   "📢 ANÚNCIO",
+  announcement_deleted:  "📢 ANÚNCIO",
+  negotiation_started:   "🤝 NEGOCIAÇÃO",
+  negotiation_completed: "🤝 NEGOCIAÇÃO",
+  negotiation_cancelled: "🤝 NEGOCIAÇÃO",
+  sale_completed:        "💰 VENDA",
+  blacklist_add:    "🔨 MODERAÇÃO",
+  blacklist_remove: "🔨 MODERAÇÃO",
+  staff_called:     "🔨 MODERAÇÃO",
+  rating_created: "⭐ AVALIAÇÃO",
+  duplicate_account_detected: "🚨 ANTI-SCAM",
+  suspicious_activity:        "🚨 ANTI-SCAM",
+  escrow_confirmed:           "🔒 ESCROW",
+  bot_started: "🟢 SISTEMA",
+  bot_stopped: "🔴 SISTEMA",
+  error:       "❌ ERRO",
+  warning:     "⚠️ AVISO",
+  config_changed:            "⚙️ CONFIG",
+  announcement_panel_setup:  "📢 ANÚNCIO",
 }
 
-/**
- * Envia uma embed de log para o canal de logs
- * @param {import("discord.js").Client} client
- * @param {object} options
- * @param {string} options.title - Titulo do log
- * @param {string} options.description - Descricao do log
- * @param {string} [options.color] - Cor hex do embed
- * @param {string} [options.type] - Tipo do log para cor automatica
- * @param {Array} [options.fields] - Campos adicionais
- * @param {string} [options.thumbnail] - URL da thumbnail
- * @param {string} [options.footer] - Texto do footer
- */
 const ANTISCAM_TYPES = new Set(["duplicate_account_detected", "suspicious_activity"])
+
+function nowBR() {
+  return new Date().toLocaleString("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  })
+}
 
 export async function sendLogEmbed(client, options) {
   try {
-    // FIX #6: Alertas anti-scam vão para canal dedicado (se configurado) + mention à staff
     const isAntiScam = ANTISCAM_TYPES.has(options.type)
     const antiScamChannelId = client.config?.channels?.antiscam
-    const logsChannelId = client.config?.channels?.logs
+    const logsChannelId     = client.config?.channels?.logs
 
-    const targetChannelId = isAntiScam && antiScamChannelId && antiScamChannelId.length > 0 ? antiScamChannelId : logsChannelId
+    const targetChannelId = isAntiScam && antiScamChannelId?.length > 0
+      ? antiScamChannelId
+      : logsChannelId
     if (!targetChannelId) return
 
     const logsChannel = await client.channels.fetch(targetChannelId).catch(() => null)
     if (!logsChannel) return
 
-    const color = options.color || LOG_COLORS[options.type] || "#5865F2"
-    const category = LOG_ICONS[options.type] || "LOG"
+    const rawColor = options.color ?? LOG_COLORS[options.type] ?? 0x5865F2
+    const color    = typeof rawColor === "string" ? parseInt(rawColor.replace("#", ""), 16) : rawColor
+    const category = LOG_ICONS[options.type] ?? "📋 LOG"
+    const emoji    = category.split(" ")[0]
+    const ts       = nowBR()
 
-    const embed = new EmbedBuilder()
-      .setColor(color)
-      .setTitle(`[${category}] ${options.title}`)
-      .setTimestamp()
+    const c = container(color)
 
-    if (options.description) {
-      embed.setDescription(options.description)
+    // Mention anti-scam no topo (dentro do container - CV2 nao aceita content separado)
+    const staffRoleId = client.config?.roles?.staff
+    if (isAntiScam && staffRoleId) {
+      c.addTextDisplayComponents(text(`<@&${staffRoleId}>`))
+      c.addSeparatorComponents(separator())
     }
 
-    if (options.fields && options.fields.length > 0) {
-      embed.addFields(options.fields)
-    }
+    // Cabecalho minimalista: emoji + bold titulo
+    const titleLine = `${emoji} **${options.title}**`
+    const headerLines = [titleLine]
+    if (options.description) headerLines.push("", options.description)
 
     if (options.thumbnail) {
-      embed.setThumbnail(options.thumbnail)
+      c.addSectionComponents(section(headerLines.join("\n"), thumbnail(options.thumbnail, options.title)))
+    } else {
+      c.addTextDisplayComponents(text(headerLines.join("\n")))
     }
 
-    embed.setFooter({ text: options.footer || `Log do Sistema` })
+    // Campos — nome simples sem bold, valor direto
+    if (options.fields?.length) {
+      const fieldText = options.fields.map(f => `${f.name}: ${f.value}`).join("\n")
+      c.addSeparatorComponents(separator())
+        .addTextDisplayComponents(text(fieldText))
+    }
 
-    const staffRoleId = client.config?.roles?.staff
-    const content = isAntiScam && staffRoleId
-      ? `🚨 <@&${staffRoleId}> — Atenção anti-scam!`
-      : undefined
+    // Footer
+    c.addSeparatorComponents(separator())
+      .addTextDisplayComponents(text(`-# ${options.footer ?? "Log do Sistema"} · ${ts}`))
 
-    await logsChannel.send({ content, embeds: [embed] })
+    await logsChannel.send({ flags: CV2, components: [c] })
   } catch (error) {
-    // Silencioso - logs nunca devem crashar o bot
-    console.error("[LOGGER] Erro ao enviar log:", error.message)
+    fileLog.error({ err: error?.message }, "[LOGGER] Erro ao enviar log")
   }
 }
 
-/**
- * Envia log detalhado de uma acao
- * @param {import("discord.js").Client} client
- * @param {string} type - Tipo da acao
- * @param {object} data - Dados do log
- * @param {string} [data.userId] - ID do usuario que executou
- * @param {string} [data.targetId] - ID do alvo
- * @param {string} [data.details] - Detalhes extras
- * @param {Array} [data.fields] - Campos adicionais
- * @param {string} [data.thumbnail] - Thumbnail
- */
 export async function logAction(client, type, data = {}) {
   const titles = {
-    ticket_created: "Ticket Criado",
-    ticket_closed: "Ticket Fechado",
-    ticket_claimed: "Ticket Assumido",
+    ticket_created:      "Ticket Criado",
+    ticket_closed:       "Ticket Fechado",
+    ticket_claimed:      "Ticket Assumido",
     ticket_call_created: "Call Criada",
-    announcement_created: "Anuncio Criado",
+    announcement_created:  "Anuncio Criado",
     announcement_approved: "Anuncio Aprovado",
     announcement_rejected: "Anuncio Rejeitado",
-    announcement_expired: "Anuncio Expirado",
-    announcement_bumped: "Anuncio Atualizado (Bump)",
-    announcement_edited: "Anuncio Editado",
-    negotiation_started: "Negociacao Iniciada",
-    negotiation_completed: "Negociacao Concluida",
-    negotiation_cancelled: "Negociacao Cancelada",
-    sale_completed: "Venda Concluida",
-    blacklist_add: "Adicionado a Blacklist",
+    announcement_expired:  "Anuncio Expirado",
+    announcement_bumped:   "Anúncio Bumped",
+    announcement_edited:   "Anúncio Editado",
+    announcement_deleted:  "Anúncio Deletado",
+    negotiation_started:   "Negociação Iniciada",
+    negotiation_completed: "Negociação Concluída",
+    negotiation_cancelled: "Negociação Cancelada",
+    sale_completed:        "Venda Concluída",
+    blacklist_add:    "Adicionado à Blacklist",
     blacklist_remove: "Removido da Blacklist",
-    staff_called: "Staff Chamada",
-    rating_created: "Avaliacao Registrada",
+    staff_called:     "Staff Chamada",
+    rating_created: "Avaliação Registrada",
     duplicate_account_detected: "Conta Duplicada Detectada",
-    suspicious_activity: "Atividade Suspeita",
-    escrow_confirmed: "Escrow Confirmado",
+    suspicious_activity:        "Atividade Suspeita",
+    escrow_confirmed:           "Escrow Confirmado",
+    config_changed:             "Configuração Alterada",
+    announcement_panel_setup:   "Painel de Anúncios Configurado",
   }
 
   const fields = []
-
-  if (data.userId) {
-    fields.push({ name: "Executado por", value: `<@${data.userId}>`, inline: true })
-  }
-
-  if (data.targetId) {
-    fields.push({ name: "Alvo", value: data.targetId, inline: true })
-  }
-
-  if (data.details) {
-    fields.push({ name: "Detalhes", value: data.details, inline: false })
-  }
-
-  if (data.fields) {
-    fields.push(...data.fields)
-  }
+  if (data.userId)   fields.push({ name: "Executado por", value: `<@${data.userId}>`, inline: true })
+  if (data.targetId)  fields.push({ name: "Alvo / ID",    value: String(data.targetId), inline: true })
+  if (data.details)  fields.push({ name: "Detalhes",      value: data.details, inline: false })
+  if (data.fields)   fields.push(...data.fields)
 
   await sendLogEmbed(client, {
-    title: titles[type] || type,
-    description: data.description || null,
+    title:       titles[type] ?? type,
+    description: data.description ?? null,
     type,
     fields,
-    thumbnail: data.thumbnail || null,
-    footer: data.footer || `ID: ${data.targetId || "N/A"}`,
+    thumbnail:   data.thumbnail ?? null,
+    footer:      data.footer ?? (data.targetId ? `ID: ${data.targetId}` : "Log do Sistema"),
   })
 }
 
-/**
- * Log formatado de erro
- */
 export async function logError(client, context, error) {
+  const msg   = String(error?.message ?? error).substring(0, 800)
+  const stack = (error?.stack ?? "N/A")
+    .split("\n").slice(0, 8).map(l => l.trim()).join("\n").substring(0, 900)
+
   await sendLogEmbed(client, {
-    title: `Erro: ${context}`,
-    description: `\`\`\`${String(error.message || error).substring(0, 1000)}\`\`\``,
-    type: "error",
-    fields: [
-      { name: "Stack", value: `\`\`\`${String(error.stack || "N/A").substring(0, 500)}\`\`\``, inline: false },
-    ],
+    title:       context,
+    description: `**Mensagem:**\n\`\`\`\n${msg}\n\`\`\`\n**Stack:**\n\`\`\`\n${stack}\n\`\`\``,
+    type:        "error",
+    footer:      `Erro - ${context}`,
   })
 }
 
-/**
- * FIX #6: Envia alerta de anti-scam para canal dedicado (se configurado) + canal de logs.
- * Alerta de UUID duplicado e atividade suspeita não se perdem no log geral.
- *
- * @param {import("discord.js").Client} client
- * @param {"duplicate_uuid"|"suspicious_activity"} type
- * @param {object} data
- */
 export async function sendAntiScamAlert(client, type, data = {}) {
   const config = client.config
+  const ts     = nowBR()
 
   const titles = {
-    duplicate_uuid: "🚨 UUID Duplicado Detectado",
-    suspicious_activity: "⚠️ Atividade Suspeita",
+    duplicate_uuid:      "UUID Duplicado Detectado",
+    suspicious_activity: "Atividade Suspeita",
   }
-
   const colors = {
-    duplicate_uuid: "#FF0000",
-    suspicious_activity: "#FFA500",
+    duplicate_uuid:      0xFF0000,
+    suspicious_activity: 0xFFA500,
   }
 
-  const fields = []
-  if (data.userId)  fields.push({ name: "Usuário",  value: `<@${data.userId}>`,   inline: true })
-  if (data.targetId) fields.push({ name: "Alvo/ID", value: String(data.targetId), inline: true })
-  if (data.details)  fields.push({ name: "Detalhes", value: data.details, inline: false })
+  const color = colors[type] ?? 0xFF0000
+  const title = titles[type] ?? "Alerta Anti-Scam"
 
-  const embed = new EmbedBuilder()
-    .setColor(colors[type] ?? "#FF0000")
-    .setTitle(titles[type] ?? "🚨 Alerta Anti-Scam")
-    .addFields(fields)
-    .setTimestamp()
-    .setFooter({ text: `Anti-Scam | ${type}` })
+  const fieldLines = []
+  if (data.userId)   fieldLines.push(`Usuario: <@${data.userId}>`)
+  if (data.targetId) fieldLines.push(`Alvo / ID: ${data.targetId}`)
+  if (data.details)  fieldLines.push(`Detalhes: ${data.details}`)
 
-  if (data.thumbnail) embed.setThumbnail(data.thumbnail)
+  const buildCard = (withMention) => {
+    const c = container(color)
 
-  // Enviar para canal antiscam dedicado (se configurado)
+    if (withMention && config.roles?.staff) {
+      c.addTextDisplayComponents(text(`<@&${config.roles.staff}>`))
+      c.addSeparatorComponents(separator())
+    }
+
+    const header = `🚨 **${title}**`
+    if (data.thumbnail) {
+      c.addSectionComponents(section(header, thumbnail(data.thumbnail, title)))
+    } else {
+      c.addTextDisplayComponents(text(header))
+    }
+
+    if (fieldLines.length) {
+      c.addSeparatorComponents(separator())
+        .addTextDisplayComponents(text(fieldLines.join("\n")))
+    }
+
+    c.addSeparatorComponents(separator())
+      .addTextDisplayComponents(text(`-# Anti-Scam · ${ts}`))
+
+    return { flags: CV2, components: [c] }
+  }
+
   const antiscamChannelId = config?.channels?.antiscam
-  if (antiscamChannelId && antiscamChannelId.length > 0) {
+  if (antiscamChannelId?.length > 0) {
     try {
-      const ch = await client.channels.fetch(antiscamChannelId)
-      if (ch) {
-        const mention = `<@&${config.roles.staff}>`
-        await ch.send({ content: mention, embeds: [embed] })
-      }
+      const ch = await client.channels.fetch(antiscamChannelId).catch(() => null)
+      if (ch) await ch.send(buildCard(true))
     } catch (err) {
-      console.error("[ANTISCAM] Erro ao enviar para canal antiscam:", err.message)
+      fileLog.error({ err: err?.message }, "[ANTISCAM] Erro ao enviar para canal antiscam")
     }
   }
 
-  // Sempre enviar também para o canal de logs
   try {
     const logsChannelId = config?.channels?.logs
     if (logsChannelId) {
-      const logsChannel = await client.channels.fetch(logsChannelId)
-      if (logsChannel) await logsChannel.send({ embeds: [embed] })
+      const logsChannel = await client.channels.fetch(logsChannelId).catch(() => null)
+      if (logsChannel) await logsChannel.send(buildCard(false))
     }
   } catch { /* silencioso */ }
 }

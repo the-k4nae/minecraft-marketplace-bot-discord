@@ -7,6 +7,7 @@
  */
 
 import fetch from "node-fetch"
+import { fileLog } from "./fileLogger.js"
 
 const uuidCache = new Map()  // nick.toLowerCase() → { uuid, name, expiresAt }
 const UUID_TTL       = 60 * 60 * 1000   // 1h para hits
@@ -45,12 +46,12 @@ export async function getPlayerUUID(nickname) {
     if (response.status === 429) {
       // Cache the rate limit for 2 minutes to avoid hammering the API
       uuidCache.set(key, { result: "RATE_LIMITED", expiresAt: now + 2 * 60 * 1000 })
-      console.warn("[MOJANG] Rate limit atingido. Cache temporário de 2min aplicado.")
+      fileLog.warn("[MOJANG] Rate limit atingido. Cache temporário de 2min aplicado.")
       return "RATE_LIMITED"
     }
 
     if (!response.ok) {
-      console.error("[MOJANG] Erro na API:", response.status)
+      fileLog.error({ status: response.status }, "[MOJANG] Erro na API")
       return null
     }
 
@@ -61,9 +62,9 @@ export async function getPlayerUUID(nickname) {
 
   } catch (error) {
     if (error.name === "TimeoutError") {
-      console.error("[MOJANG] Timeout ao buscar UUID de:", nickname)
+      fileLog.error({ nickname }, "[MOJANG] Timeout ao buscar UUID")
     } else {
-      console.error("[MOJANG] Erro ao buscar UUID:", error.message)
+      fileLog.error({ err: error.message }, "[MOJANG] Erro ao buscar UUID")
     }
     return null
   }
@@ -95,17 +96,31 @@ export function getUUIDCacheSize() {
 }
 
 /**
- * Gera URLs de skin do jogador.
- * Usa mc-heads.net como primária (mais estável) e crafatar como alternativa.
- * O Discord tenta a URL e exibe em branco se o serviço estiver fora.
- * @param {string} identifier - UUID ou nickname
+ * Formata UUID sem dashes para o formato com dashes (requerido por algumas APIs).
+ * @param {string} id
+ */
+function formatUUID(id) {
+  if (!id || id.includes("-")) return id
+  return `${id.slice(0,8)}-${id.slice(8,12)}-${id.slice(12,16)}-${id.slice(16,20)}-${id.slice(20)}`
+}
+
+/**
+ * Gera URLs de skin do jogador via Visage (visage.surgeplay.com).
+ * Renders 3D isométricos de alta qualidade. Fallback: minotar.net
+ * @param {string} identifier - UUID (preferido) ou nickname
  */
 export function getSkinUrls(identifier) {
-  // mc-heads.net é mais estável que crafatar para rate limit
+  const id = formatUUID(identifier)
   return {
-    body:   `https://mc-heads.net/body/${identifier}/100`,
-    head:   `https://mc-heads.net/head/${identifier}/100`,
-    avatar: `https://mc-heads.net/avatar/${identifier}/100`,
+    // Render completo do corpo (3D isométrico)
+    body:   `https://visage.surgeplay.com/full/200/${id}.png`,
+    // Render somente da cabeça (3D)
+    head:   `https://visage.surgeplay.com/head/150/${id}.png`,
+    // Face frontal (2D, mais leve e rápida)
+    avatar: `https://visage.surgeplay.com/face/150/${id}.png`,
+    // Fallbacks caso Visage esteja fora
+    avatarFallback: `https://minotar.net/avatar/${id}/150`,
+    bodyFallback:   `https://minotar.net/body/${id}/200`,
   }
 }
 

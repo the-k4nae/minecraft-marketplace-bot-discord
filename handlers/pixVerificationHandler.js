@@ -22,15 +22,15 @@
 import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle,
   ModalBuilder, TextInputBuilder, TextInputStyle,
-  EmbedBuilder, MessageFlags,
+  MessageFlags,
 } from "discord.js"
 import {
-  addPaymentProof, getNegotiationById,
+  addPaymentProof, getPaymentProofs, getNegotiationById,
   getAnnouncement, addLog, updateConfig, getConfig,
 } from "../utils/database.js"
-import { COLORS, parseMoney } from "../utils/embedBuilder.js"
-import { box, C2_FLAG } from "../utils/cv2.js"
+import { CV2, CV2_EPHEMERAL, container, text, separator, createRow, createButton, COLORS, parseMoney } from "../utils/components.js"
 import { sendLogEmbed } from "../utils/logger.js"
+import { fileLog } from "../utils/fileLogger.js"
 
 // ─────────────────────────────────────────────
 // VERIFICAR SE PIX ESTÁ LIGADO
@@ -50,7 +50,7 @@ export function isPixVerificationEnabled(client) {
 
 export function togglePixVerification(enable) {
   updateConfig("features.pixVerification", enable ? "1" : "0")
-  console.log(`[PIX] Verificação de comprovante ${enable ? "ATIVADA" : "DESATIVADA"}`)
+  fileLog.info({ enabled: enable }, `[PIX] Verificação de comprovante ${enable ? "ATIVADA" : "DESATIVADA"}`)
 }
 
 // ─────────────────────────────────────────────
@@ -241,33 +241,34 @@ export async function handlePaymentProofSubmit(interaction, params, client) {
   const proof = addPaymentProof(negotiationId, interaction.user.id, url, filename)
   addLog("payment_proof_added", interaction.user.id, String(negotiationId), url)
 
-  // ── Embed no canal de negociação ──────────────────────
+  // ── Container no canal de negociação ──────────────────────
   const isAlert = pixAlert?.isSuspicious
 
-  const alertWarning = isAlert ? "\n\n🚨 **A verificação de valor detectou uma discrepância!**" : ""
-  const pixContent =
-    `## ${isAlert ? "⚠️ Comprovante Enviado — VERIFICAÇÃO FALHOU" : "📎 Comprovante de Pagamento Enviado"}\n\n` +
-    `${interaction.user} enviou um comprovante.${alertWarning}\n\n` +
-    `🔗 [Ver comprovante](${url})` +
-    (tipoPagamento ? `   💳 **Tipo:** ${tipoPagamento}` : "") +
-    (valorPago != null ? `   💰 **Valor declarado:** R$ ${valorPago.toFixed(2)}` : "") +
-    (pixAlert ? `   💰 **Valor esperado:** R$ ${pixAlert.valorEsperado.toFixed(2)}   📊 **Diferença:** R$ ${pixAlert.diff} (${pixAlert.diffPct}%)` : "") +
+  let details =
+    (isAlert ? `## ⚠️ Comprovante Enviado — VERIFICAÇÃO FALHOU\n` : `## 📎 Comprovante de Pagamento Enviado\n`) +
+    `${interaction.user} enviou um comprovante.` +
+    (isAlert ? `\n\n🚨 **A verificação de valor detectou uma discrepância!**` : "") +
+    `\n\n🔗 **Arquivo:** [Ver comprovante](${url})` +
+    (tipoPagamento ? `\n💳 **Tipo:** ${tipoPagamento}` : "") +
+    (valorPago != null ? `\n💰 **Valor declarado:** R$ ${valorPago.toFixed(2)}` : "") +
+    (pixAlert ? `\n💰 **Valor esperado:** R$ ${pixAlert.valorEsperado.toFixed(2)}` : "") +
+    (pixAlert ? `\n📊 **Diferença:** R$ ${pixAlert.diff} (${pixAlert.diffPct}%)` : "") +
     (chavePix ? `\n🔑 **Chave PIX:** \`${chavePix}\`` : "") +
-    (descricao ? `   📝 **Obs:** ${descricao}` : "") +
-    `\n🕐 **Enviado em:** <t:${Math.floor(Date.now() / 1000)}:f>\n\n` +
-    `-# ID #${proof.id}${pixEnabled ? " · Verificação PIX ativada" : ""}`
+    (descricao ? `\n📝 **Observação:** ${descricao}` : "") +
+    `\n🕐 **Enviado em:** <t:${Math.floor(Date.now() / 1000)}:f>` +
+    `\n-# ID #${proof.id}${pixEnabled ? " · Verificação PIX ativada" : ""}`
 
-  // Botão de staff para marcar como verificado/suspeito (só quando PIX ligado e suspeito)
-  const components = []
+  const proofContainer = container(isAlert ? COLORS.DANGER : COLORS.SUCCESS)
+    .addTextDisplayComponents(text(details))
+
   if (isAlert) {
-    const staffRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`pix_approve_${proof.id}`).setLabel("✅ Aprovar mesmo assim").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`pix_flag_${proof.id}`).setLabel("🚫 Marcar como fraudulento").setStyle(ButtonStyle.Danger),
-    )
-    components.push(staffRow)
+    proofContainer.addActionRowComponents(createRow(
+      createButton({ customId: `pix_approve_${proof.id}`, label: "✅ Aprovar mesmo assim", style: ButtonStyle.Success }),
+      createButton({ customId: `pix_flag_${proof.id}`, label: "🚫 Marcar como fraudulento", style: ButtonStyle.Danger }),
+    ))
   }
 
-  await interaction.channel.send({ components: [appendRows(box(pixContent, isAlert ? 0xFF4444 : 0x00D166), ...components)], flags: C2_FLAG })
+  await interaction.channel.send({ flags: CV2, components: [proofContainer] })
   await interaction.editReply({ content: isAlert
     ? "⚠️ Comprovante registrado, mas a verificação de valor detectou uma diferença. A staff foi notificada."
     : "✅ Comprovante registrado com sucesso!"
@@ -306,12 +307,11 @@ export async function handlePixStaffAction(interaction, action, proofId, client)
   }
 
   if (action === "approve") {
-    // Mensagem é C2 — editar substituindo o container pelo texto de aprovação, sem botões
+    // Rebuild container com status de aprovado
     try {
-      await interaction.message.edit({
-        components: [box(`## ✅ Comprovante Verificado pela Staff\n\nAprovado por <@${interaction.user.id}>`, 0x00D166)],
-        flags: C2_FLAG,
-      })
+      const ac = container(COLORS.SUCCESS)
+        .addTextDisplayComponents(text(`## ✅ Comprovante Verificado pela Staff\nAprovado por <@${interaction.user.id}>`))
+      await interaction.message.edit({ flags: CV2, components: [ac] })
     } catch { /* ok */ }
 
     addLog("pix_proof_approved", interaction.user.id, String(proofId))
@@ -319,15 +319,10 @@ export async function handlePixStaffAction(interaction, action, proofId, client)
   }
 
   if (action === "flag") {
-    // Mensagem é C2 — editar substituindo o container pelo texto de fraude, sem botões
     try {
-      await interaction.message.edit({
-        components: [box(
-          `## 🚫 Comprovante Marcado como SUSPEITO pela Staff\n\n⚠️ Marcado por <@${interaction.user.id}>\n\n**Ação necessária:** Verifique a negociação antes de prosseguir.`,
-          0xFF4444
-        )],
-        flags: C2_FLAG,
-      })
+      const fc = container(COLORS.DANGER)
+        .addTextDisplayComponents(text(`## 🚫 Comprovante Marcado como SUSPEITO pela Staff\n⚠️ Marcado por <@${interaction.user.id}>\n\n**Ação necessária:** Verifique a negociação antes de prosseguir.`))
+      await interaction.message.edit({ flags: CV2, components: [fc] })
     } catch { /* ok */ }
 
     await sendLogEmbed(client, {
@@ -347,22 +342,22 @@ export async function handlePixStaffAction(interaction, action, proofId, client)
 // Para exibição no /staff → Config
 // ─────────────────────────────────────────────
 
-export function buildPixStatusEmbed(enabled) {
-  return new EmbedBuilder()
-    .setColor(enabled ? COLORS.SUCCESS : COLORS.DANGER)
-    .setTitle(`${enabled ? "🟢" : "🔴"} Verificação PIX — ${enabled ? "ATIVADA" : "DESATIVADA"}`)
-    .setDescription(
-      enabled
-        ? "**O que está ativo:**\n" +
-          "• Modal de comprovante com campos extras (valor, tipo, chave PIX)\n" +
-          "• Comparação automática do valor declarado vs valor da negociação\n" +
-          "• Alerta para staff quando houver diferença > 1%\n" +
-          "• Botões de staff para aprovar/marcar como suspeito"
-        : "**Modo simples ativo:**\n" +
-          "• Modal de comprovante padrão (URL + descrição)\n" +
-          "• Sem validação de valor\n\n" +
-          "Ative para ter verificação automática de comprovantes."
+export function buildPixStatusContainer(enabled) {
+  const desc = enabled
+    ? "**O que está ativo:**\n" +
+      "• Modal de comprovante com campos extras (valor, tipo, chave PIX)\n" +
+      "• Comparação automática do valor declarado vs valor da negociação\n" +
+      "• Alerta para staff quando houver diferença > 1%\n" +
+      "• Botões de staff para aprovar/marcar como suspeito"
+    : "**Modo simples ativo:**\n" +
+      "• Modal de comprovante padrão (URL + descrição)\n" +
+      "• Sem validação de valor\n\n" +
+      "Ative para ter verificação automática de comprovantes."
+
+  return container(enabled ? COLORS.SUCCESS : COLORS.DANGER)
+    .addTextDisplayComponents(
+      text(`## ${enabled ? "🟢" : "🔴"} Verificação PIX — ${enabled ? "ATIVADA" : "DESATIVADA"}\n${desc}`),
     )
-    .setFooter({ text: "Clique no botão abaixo para alternar" })
-    .setTimestamp()
+    .addSeparatorComponents(separator())
+    .addTextDisplayComponents(text("-# Clique no botão abaixo para alternar"))
 }

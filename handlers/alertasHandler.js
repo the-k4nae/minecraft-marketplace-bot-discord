@@ -1,23 +1,24 @@
 /**
- * alertasHandler.js
+ * alertasHandler.js — Components V2
  *
- * Sistema de alertas via embed + botões + modal.
- * Substitui os subcomandos: /alertas criar, /alertas listar, /alertas deletar
+ * Sistema de alertas via CV2 containers + botões + modal.
  */
 
 import {
-  EmbedBuilder,
   ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
   MessageFlags,
+  ButtonStyle,
 } from "discord.js"
 import { getUserAlerts, createAlert, deleteAlert } from "../utils/database.js"
-import { COLORS, parseMoney, buildAlertasPanelC2 } from "../utils/embedBuilder.js"
-import { box, C2_FLAG, C2_EPHEMERAL } from "../utils/cv2.js"
+import {
+  CV2_EPHEMERAL,
+  container, text, separator, section, thumbnail,
+  createRow, createButton, formatValor, parseMoney,
+  COLORS,
+} from "../utils/components.js"
 
 // ─────────────────────────────────────────────
 // PAINEL PRINCIPAL /alertas
@@ -27,69 +28,54 @@ export async function handleAlertasCommand(interaction, client) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
   const alerts = getUserAlerts(interaction.user.id)
+  const panel = buildAlertasPanel(interaction.user, alerts)
 
-  const container = buildAlertasPanelC2(interaction.user, alerts)
-  const components = buildAlertasComponents(alerts)
-  await interaction.editReply({ components: [appendRows(container, ...components)], flags: C2_FLAG })
+  await interaction.editReply(panel)
 }
 
-function buildAlertasEmbed(user, alerts) {
-  const embed = new EmbedBuilder()
-    .setColor(COLORS.INFO)
-    .setTitle("🔔 Meus Alertas de Interesse")
-    .setThumbnail(user.displayAvatarURL({ dynamic: true }))
-    .setDescription(
-      alerts.length === 0
-        ? "Você não tem alertas ativos.\n\nCrie um alerta para ser notificado por DM quando um anúncio corresponder aos seus filtros."
-        : `Você tem **${alerts.length}/10** alertas ativos.\nVocê será notificado por DM quando um novo anúncio corresponder.`
+function buildAlertasPanel(user, alerts) {
+  const c = container(COLORS.INFO)
+  c.addSectionComponents(
+    section(
+      `## 🔔 Meus Alertas de Interesse\n` +
+      (alerts.length === 0
+        ? "Você não tem alertas ativos.\nCrie um alerta para ser notificado por DM quando um anúncio corresponder aos seus filtros."
+        : `Você tem **${alerts.length}/10** alertas ativos.\nVocê será notificado por DM quando um novo anúncio corresponder.`),
+      thumbnail(user.displayAvatarURL({ extension: "webp", forceStatic: false, size: 128 }), user.username)
     )
-    .setTimestamp()
-
-  for (const a of alerts.slice(0, 10)) {
-    const f = a.filters
-    const filtersText = [
-      f.nick ? `Nick contém: \`${f.nick}\`` : null,
-      f.minPrice ? `Mín: R$ ${f.minPrice}` : null,
-      f.maxPrice ? `Máx: R$ ${f.maxPrice}` : null,
-      f.vip ? `VIP/Tag: \`${f.vip}\`` : null,
-    ].filter(Boolean).join("  ·  ")
-
-    const last = a.last_triggered_at
-      ? `<t:${Math.floor(new Date(a.last_triggered_at).getTime() / 1000)}:R>`
-      : "Nunca disparado"
-
-    embed.addFields({
-      name: `Alerta #${a.id}`,
-      value: `${filtersText || "Sem filtros"}\n📅 Último disparo: ${last}`,
-      inline: false,
-    })
-  }
-
-  return embed
-}
-
-function buildAlertasComponents(alerts) {
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("alertas_criar")
-      .setLabel("Criar Alerta")
-      .setStyle(ButtonStyle.Success)
-      .setEmoji("➕")
-      .setDisabled(alerts.length >= 10),
-    new ButtonBuilder()
-      .setCustomId("alertas_deletar")
-      .setLabel("Deletar Alerta")
-      .setStyle(ButtonStyle.Danger)
-      .setEmoji("🗑️")
-      .setDisabled(alerts.length === 0),
-    new ButtonBuilder()
-      .setCustomId("alertas_refresh")
-      .setLabel("Atualizar")
-      .setStyle(ButtonStyle.Secondary)
-      .setEmoji("🔄"),
   )
 
-  return [row]
+  if (alerts.length > 0) {
+    c.addSeparatorComponents(separator())
+    let alertsText = ""
+    for (const a of alerts.slice(0, 10)) {
+      const f = a.filters
+      const filtersText = [
+        f.nick ? `Nick: \`${f.nick}\`` : null,
+        f.minPrice ? `Mín: R$ ${f.minPrice}` : null,
+        f.maxPrice ? `Máx: R$ ${f.maxPrice}` : null,
+        f.vip ? `VIP: \`${f.vip}\`` : null,
+      ].filter(Boolean).join(" · ")
+
+      const last = a.last_triggered_at
+        ? `<t:${Math.floor(new Date(a.last_triggered_at).getTime() / 1000)}:R>`
+        : "Nunca"
+
+      alertsText += `**#${a.id}** — ${filtersText || "Sem filtros"} · Disparo: ${last}\n`
+    }
+    c.addTextDisplayComponents(text(alertsText.trim()))
+  }
+
+  c.addSeparatorComponents(separator())
+  c.addActionRowComponents(
+    createRow(
+      createButton({ customId: "alertas_criar", label: "➕ Criar Alerta", style: ButtonStyle.Success, disabled: alerts.length >= 10 }),
+      createButton({ customId: "alertas_deletar", label: "🗑️ Deletar", style: ButtonStyle.Danger, disabled: alerts.length === 0 }),
+      createButton({ customId: "alertas_refresh", label: "🔄 Atualizar", style: ButtonStyle.Secondary }),
+    )
+  )
+
+  return { flags: CV2_EPHEMERAL, components: [c] }
 }
 
 // ─────────────────────────────────────────────
@@ -104,9 +90,8 @@ export async function handleAlertasButton(interaction, action, client) {
   } else if (action === "refresh") {
     await interaction.deferUpdate()
     const alerts = getUserAlerts(interaction.user.id)
-    const alertsContainer = buildAlertasPanelC2(interaction.user, alerts)
-    const components = buildAlertasComponents(alerts)
-    await interaction.editReply({ components: [appendRows(alertsContainer, ...components)], flags: C2_FLAG })
+    const panel = buildAlertasPanel(interaction.user, alerts)
+    await interaction.editReply(panel)
   }
 }
 
@@ -218,10 +203,11 @@ export async function handleAlertasCriarSubmit(interaction, client) {
     vip ? `VIP/Tag: **${vip}**` : null,
   ].filter(Boolean).join("\n")
 
-  await interaction.editReply({
-    components: [box(`## 🔔 Alerta Criado!\n\nVocê será notificado por DM quando um anúncio corresponder aos seus filtros.\n\n**Filtros:**\n${filtersText}\n\n-# ID do alerta: ${alert.id}`, 0x00D166)],
-    flags: C2_EPHEMERAL,
-  })
+  const c = container(COLORS.SUCCESS)
+    .addTextDisplayComponents(
+      text(`## 🔔 Alerta Criado!\nVocê será notificado por DM quando um anúncio corresponder aos seus filtros.\n\n**Filtros:**\n${filtersText}\n\n-# ID do alerta: ${alert.id}`)
+    )
+  await interaction.editReply({ flags: CV2_EPHEMERAL, components: [c] })
 }
 
 export async function handleAlertasDeletarSubmit(interaction, client) {
@@ -240,8 +226,9 @@ export async function handleAlertasDeletarSubmit(interaction, client) {
     return interaction.editReply({ content: `❌ Alerta #${alertId} não encontrado ou não é seu.` })
   }
 
-  await interaction.editReply({
-    components: [box(`## 🗑️ Alerta Deletado\n\nAlerta **#${alertId}** removido com sucesso.`, 0x00D166)],
-    flags: C2_EPHEMERAL,
-  })
+  const c = container(COLORS.SUCCESS)
+    .addTextDisplayComponents(
+      text(`## 🗑️ Alerta Deletado\nAlerta **#${alertId}** removido com sucesso.`)
+    )
+  await interaction.editReply({ flags: CV2_EPHEMERAL, components: [c] })
 }

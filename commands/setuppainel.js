@@ -1,4 +1,5 @@
 import { SlashCommandBuilder, PermissionFlagsBits } from "discord.js"
+import { handleSetupPainelCommand } from "../handlers/ticketHandler.js"
 
 export const data = new SlashCommandBuilder()
   .setName("setuppainel")
@@ -9,6 +10,5 @@ export const data = new SlashCommandBuilder()
   )
 
 export async function execute(interaction, client) {
-  const { handleSetupPainelCommand } = await import("../handlers/ticketHandler.js")
   await handleSetupPainelCommand(interaction, client)
 }

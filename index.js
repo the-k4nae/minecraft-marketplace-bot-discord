@@ -10,16 +10,16 @@
 import "dotenv/config"
 import { Client, GatewayIntentBits, Collection } from "discord.js"
 import { readFileSync, readdirSync } from "fs"
-import { pathToFileURL } from "url"
+import { pathToFileURL, fileURLToPath } from "url"
 import { join, dirname } from "path"
-import { fileURLToPath } from "url"
-import { initDatabase, saveDatabase, saveDatabaseSync } from "./utils/database.js"
+import { initDatabase, saveDatabase, saveDatabaseSync, updateChannelActivity } from "./utils/database.js"
 import { registerCommandsIfChanged } from "./utils/registerCommands.js"
 import { startSchedulers } from "./utils/scheduler.js"
 import { startHealthcheck } from "./utils/healthcheck.js"
 import { startAutoBackup, createBackupSync } from "./utils/backup.js"
 import { sendLogEmbed } from "./utils/logger.js"
-import { updateChannelActivity } from "./utils/database.js"
+import { fileLogError, fileLog } from "./utils/fileLogger.js"
+import { initErrorAlerter, sendCriticalError } from "./utils/errorAlerter.js"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -27,10 +27,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 // VALIDAÇÃO DE VARIÁVEIS DE AMBIENTE
 // ─────────────────────────────────────────────
 
-const requiredEnvVars = ["DISCORD_TOKEN", "DISCORD_CLIENT_ID", "DISCORD_GUILD_ID"]
+const requiredEnvVars = [
+  "DISCORD_TOKEN", "DISCORD_CLIENT_ID", "DISCORD_GUILD_ID",
+  "CHANNEL_ANUNCIOS", "CHANNEL_LOGS", "CHANNEL_ANTISCAM", "CHANNEL_VENDAS",
+  "CHANNEL_MEDIA_ARCHIVE", "ROLE_STAFF", "CATEGORY_TICKETS", "CATEGORY_NEGOCIACOES",
+]
 for (const envVar of requiredEnvVars) {
   if (!process.env[envVar]) {
-    console.error(`[FATAL] Variavel de ambiente ${envVar} nao definida. Verifique seu arquivo .env`)
+    fileLog.error({ envVar }, "[FATAL] Variavel de ambiente nao definida. Verifique seu arquivo .env")
     process.exit(1)
   }
 }
@@ -45,14 +49,28 @@ let config
 try {
   config = JSON.parse(readFileSync(join(__dirname, "config.json"), "utf-8"))
 } catch (error) {
-  console.error("[FATAL] Erro ao carregar config.json:", error.message)
+  fileLog.error({ err: error.message }, "[FATAL] Erro ao carregar config.json")
   process.exit(1)
 }
 
-// Injetar credenciais do .env (não precisam estar no config.json)
+// Injetar credenciais e IDs do .env — único source of truth para dados sensíveis
 config.token    = process.env.DISCORD_TOKEN
 config.clientId = process.env.DISCORD_CLIENT_ID
 config.guildId  = process.env.DISCORD_GUILD_ID
+
+config.channels = {
+  anuncios:      process.env.CHANNEL_ANUNCIOS,
+  logs:          process.env.CHANNEL_LOGS,
+  antiscam:      process.env.CHANNEL_ANTISCAM,
+  vendas:        process.env.CHANNEL_VENDAS,
+  mediaArchive:  process.env.CHANNEL_MEDIA_ARCHIVE,
+  review:        process.env.CHANNEL_REVIEW || "",  // canal onde reviews de anúncios chegam — NUNCA usar logs como fallback
+}
+config.roles      = { staff: process.env.ROLE_STAFF }
+config.categories = {
+  tickets:      process.env.CATEGORY_TICKETS,
+  negociacoes:  process.env.CATEGORY_NEGOCIACOES,
+}
 
 // ─────────────────────────────────────────────
 // CLIENTE DISCORD
@@ -87,20 +105,20 @@ const MAX_RECONNECT_ATTEMPTS = 5
 
 client.on("shardReconnecting", () => {
   reconnectAttempts++
-  console.log(`[RECONEXAO] Tentativa ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}...`)
+  fileLog.info({ attempt: reconnectAttempts, max: MAX_RECONNECT_ATTEMPTS }, "[RECONEXAO] Tentativa")
 })
 
 client.on("shardResume", () => {
   reconnectAttempts = 0
-  console.log("[RECONEXAO] Reconectado com sucesso!")
+  fileLog.info("[RECONEXAO] Reconectado com sucesso!")
 })
 
 client.on("shardDisconnect", event => {
-  console.warn(`[DESCONEXAO] Codigo: ${event.code} | Motivo: ${event.reason || "desconhecido"}`)
+  fileLog.warn({ code: event.code, reason: event.reason || "desconhecido" }, "[DESCONEXAO]")
 })
 
 client.on("shardError", error => {
-  console.error("[SHARD ERRO]", error.message)
+  fileLogError("shardError", error)
 })
 
 // Nota: client.on("rateLimit") foi removido no discord.js v14.
@@ -108,16 +126,16 @@ client.on("shardError", error => {
 // Para monitorar, use client.rest.on("rateLimited", ...) se necessário.
 
 client.on("error", error => {
-  console.error("[CLIENT ERRO]", error.message)
+  fileLogError("clientError", error)
 })
 
 client.on("warn", message => {
-  console.warn("[CLIENT AVISO]", message)
+  fileLog.warn({ message }, "[CLIENT AVISO]")
 })
 
 if (process.env.DEBUG === "true") {
   client.on("debug", message => {
-    console.debug("[DEBUG]", message)
+    fileLog.debug({ message }, "[DEBUG]")
   })
 }
 
@@ -131,18 +149,20 @@ if (process.env.DEBUG === "true") {
 
 const readyModule = await import("./events/ready.js")
 const interactionModule = await import("./events/interactionCreate.js")
+const { handlePhotoMessage } = await import("./handlers/photoEdit.js")
 
 client.once("clientReady", () => {
   readyModule.default(client)
   reconnectAttempts = 0
 
+  initErrorAlerter(client)
   startSchedulers(client)
   startHealthcheck(client)
   startAutoBackup(6)
 
   sendLogEmbed(client, {
     title: "Bot Iniciado",
-    description: `Bot **${client.user.tag}** conectado com sucesso.`,
+    description: `Bot **${client.user.username}** conectado com sucesso.`,
     color: "#00FF00",
     fields: [
       { name: "Servidores", value: client.guilds.cache.size.toString(), inline: true },
@@ -156,11 +176,12 @@ client.on("interactionCreate", interaction =>
   interactionModule.default(interaction, client)
 )
 
-// Rastrear atividade de canais para anti-inatividade
+// Rastrear atividade de canais para anti-inatividade + edição de foto
 client.on("messageCreate", message => {
   if (!message.author.bot && message.channelId) {
     updateChannelActivity(message.channelId)
   }
+  handlePhotoMessage(message, client)
 })
 
 // ─────────────────────────────────────────────
@@ -174,12 +195,12 @@ async function loadCommands() {
     const module = await import(pathToFileURL(join(commandsPath, file)).href)
     if (module.data && module.execute) {
       client.commands.set(module.data.name, module)
-      console.log(`[COMANDOS] Carregado: /${module.data.name}`)
+      fileLog.info({ command: module.data.name }, "[COMANDOS] Carregado")
     }
   }
 }
 
-await loadCommands().catch(err => console.error("[COMANDOS] Erro ao carregar:", err))
+await loadCommands().catch(err => fileLog.error({ err: err?.message }, "[COMANDOS] Erro ao carregar"))
 
 // Registra comandos slash apenas se houve mudanças (evita rate limit)
 await registerCommandsIfChanged(config.token, config.clientId, config.guildId)
@@ -189,7 +210,8 @@ await registerCommandsIfChanged(config.token, config.clientId, config.guildId)
 // ─────────────────────────────────────────────
 
 process.on("unhandledRejection", (reason) => {
-  console.error("[UNHANDLED REJECTION]", reason)
+  fileLogError("unhandledRejection", reason)
+  sendCriticalError("unhandledRejection", reason)
   sendLogEmbed(client, {
     title: "Erro Nao Tratado",
     description: `\`\`\`${String(reason).substring(0, 1000)}\`\`\``,
@@ -198,12 +220,13 @@ process.on("unhandledRejection", (reason) => {
 })
 
 process.on("uncaughtException", error => {
-  console.error("[UNCAUGHT EXCEPTION]", error)
+  fileLogError("uncaughtException", error)
+  sendCriticalError("uncaughtException", error)
   try {
     saveDatabaseSync()
     createBackupSync()
   } catch (e) {
-    console.error("[EMERGENCY] Falha ao salvar dados:", e.message)
+    fileLog.error({ err: e?.message }, "[EMERGENCY] Falha ao salvar dados")
   }
   process.exit(1)
 })
@@ -213,24 +236,24 @@ process.on("uncaughtException", error => {
 // ─────────────────────────────────────────────
 
 async function gracefulShutdown(signal) {
-  console.log(`\n[SHUTDOWN] Sinal ${signal} recebido. Desligando graciosamente...`)
+  fileLog.info({ signal }, "[SHUTDOWN] Sinal recebido. Desligando graciosamente...")
   try {
     saveDatabaseSync()
-    console.log("[SHUTDOWN] Banco de dados salvo.")
+    fileLog.info("[SHUTDOWN] Banco de dados salvo.")
 
     createBackupSync()
-    console.log("[SHUTDOWN] Backup de emergencia criado.")
+    fileLog.info("[SHUTDOWN] Backup de emergencia criado.")
 
     await sendLogEmbed(client, {
       title: "Bot Desligado",
-      description: `Bot **${client.user?.tag || "desconhecido"}** desligado graciosamente. Sinal: ${signal}`,
+      description: `Bot **${client.user?.username || "desconhecido"}** desligado graciosamente. Sinal: ${signal}`,
       color: "#FF6B6B",
     }).catch(() => {})
 
     client.destroy()
-    console.log("[SHUTDOWN] Client destruido. Ate mais!")
+    fileLog.info("[SHUTDOWN] Client destruido. Ate mais!")
   } catch (error) {
-    console.error("[SHUTDOWN] Erro durante desligamento:", error.message)
+    fileLog.error({ err: error?.message }, "[SHUTDOWN] Erro durante desligamento")
   }
   process.exit(0)
 }
@@ -246,16 +269,16 @@ async function loginWithRetry(maxRetries = 3, delayMs = 5000) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       await client.login(config.token)
-      console.log("[LOGIN] Login realizado com sucesso!")
+      fileLog.info("[LOGIN] Login realizado com sucesso!")
       return
     } catch (error) {
-      console.error(`[LOGIN] Tentativa ${attempt}/${maxRetries} falhou:`, error.message)
+      fileLog.error({ attempt, max: maxRetries, err: error?.message }, "[LOGIN] Tentativa falhou")
       if (attempt < maxRetries) {
-        console.log(`[LOGIN] Tentando novamente em ${delayMs / 1000}s...`)
+        fileLog.info({ delayMs }, "[LOGIN] Tentando novamente...")
         await new Promise(res => setTimeout(res, delayMs))
         delayMs *= 2
       } else {
-        console.error("[FATAL] Nao foi possivel conectar ao Discord apos todas as tentativas.")
+        fileLog.error("[FATAL] Nao foi possivel conectar ao Discord apos todas as tentativas.")
         process.exit(1)
       }
     }

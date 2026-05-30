@@ -7,7 +7,6 @@
  */
 
 import {
-  EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
@@ -21,69 +20,27 @@ import {
 import {
   addToBlacklist, removeFromBlacklist, getBlacklist, getBlacklistEntry,
   isBlacklisted, getStats, getPendingAnnouncements,
+  getAnnouncement, getUserAverageRating, getUserSuspiciousActivity,
   getAllSuspiciousUsers, getAnnouncementStats,
   addLog, updateConfig, getWeeklyStats, getAnnouncementsPaginated,
 } from "../utils/database.js"
 import { logAction } from "../utils/logger.js"
-import { COLORS, formatValor, buildStaffPanelC2, buildBlacklistPanelC2 } from "../utils/embedBuilder.js"
-import { box, text, C2_FLAG } from "../utils/cv2.js"
+import { COLORS, formatValor, container, text, separator, createRow, createButton, CV2, CV2_EPHEMERAL } from "../utils/components.js"
+import { isStaff as _isStaff } from "../utils/validator.js"
 import {
-  isPixVerificationEnabled, togglePixVerification, buildPixStatusEmbed,
+  isPixVerificationEnabled, togglePixVerification, buildPixStatusContainer,
 } from "./pixVerificationHandler.js"
 
 // ─────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────
 
-function isStaff(interaction, config) {
-  return interaction.member.roles.cache.has(config.roles.staff)
-}
+const isStaff = (interaction, config) => _isStaff(interaction.member, config.roles?.staff)
 
-function buildMainPanelEmbed(guild, stats) {
-  const pending = getPendingAnnouncements()
+function buildMainPanel(guild, stats) {
+  const pending    = getPendingAnnouncements()
   const suspicious = getAllSuspiciousUsers()
 
-  return new EmbedBuilder()
-    .setColor(COLORS.PRIMARY)
-    .setTitle("⚙️  Painel de Gerenciamento — Staff")
-    .setThumbnail(guild.iconURL({ dynamic: true }))
-    .setDescription("Selecione uma seção abaixo para gerenciar o servidor.")
-    .addFields(
-      {
-        name: "🎫 Tickets",
-        value: `Abertos: **${stats.openTickets}** · Fechados: **${stats.closedTickets}** · Total: **${stats.totalTickets}**`,
-        inline: false,
-      },
-      {
-        name: "📢 Anúncios",
-        value:
-          `Pendentes: **${stats.pendingAnnouncements}** ${stats.pendingAnnouncements > 0 ? "⚠️" : "✅"}  ` +
-          `Ativos: **${stats.activeAnnouncements}**  Vendidos: **${stats.soldAnnouncements}**`,
-        inline: false,
-      },
-      {
-        name: "🤝 Negociações",
-        value: `Ativas: **${stats.totalNegotiations - stats.completedNegotiations}**  Concluídas: **${stats.completedNegotiations}**`,
-        inline: false,
-      },
-      {
-        name: "🚨 Atenção",
-        value:
-          `Blacklist: **${stats.blacklistedUsers}** usuários\n` +
-          `Suspeitos: **${suspicious.length}** ${suspicious.length > 0 ? "⚠️" : "✅"}\n` +
-          `Reservas ativas: **${stats.activeReservations ?? 0}**`,
-        inline: false,
-      },
-    )
-    .setFooter({ text: `Atualizado` })
-    .setTimestamp()
-}
-
-function buildMainPanelComponents(stats) {
-  const pending = getPendingAnnouncements()
-  const suspicious = getAllSuspiciousUsers()
-
-  // Select menu principal
   const select = new StringSelectMenuBuilder()
     .setCustomId("staff_panel_section")
     .setPlaceholder("Selecione uma seção...")
@@ -112,7 +69,6 @@ function buildMainPanelComponents(stats) {
 
   const row1 = new ActionRowBuilder().addComponents(select)
 
-  // Botões de atalho rápido
   const row2 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("staff_quick_pending")
@@ -136,7 +92,26 @@ function buildMainPanelComponents(stats) {
       .setEmoji("📈"),
   )
 
-  return [row1, row2]
+  const c = container(COLORS.PRIMARY)
+    .addTextDisplayComponents(text(
+      `## ⚙️  Painel de Gerenciamento — Staff
+` +
+      `${guild.name} · Selecione uma seção abaixo.
+
+` +
+      `🎫 **Tickets** · Abertos: **${stats.openTickets}** · Fechados: **${stats.closedTickets}** · Total: **${stats.totalTickets}**
+` +
+      `📢 **Anúncios** · Pendentes: **${stats.pendingAnnouncements}** ${stats.pendingAnnouncements > 0 ? "⚠️" : "✅"} · Ativos: **${stats.activeAnnouncements}** · Vendidos: **${stats.soldAnnouncements}**
+` +
+      `🤝 **Negociações** · Ativas: **${stats.totalNegotiations - stats.completedNegotiations}** · Concluídas: **${stats.completedNegotiations}**
+` +
+      `🚨 **Atenção** · Blacklist: **${stats.blacklistedUsers}** · Suspeitos: **${suspicious.length}** ${suspicious.length > 0 ? "⚠️" : "✅"} · Reservas: **${stats.activeReservations ?? 0}**`
+    ))
+    .addSeparatorComponents(separator())
+    .addActionRowComponents(row1)
+    .addActionRowComponents(row2)
+
+  return { flags: CV2, components: [c] }
 }
 
 // ─────────────────────────────────────────────
@@ -147,17 +122,16 @@ export async function handleStaffCommand(interaction, client) {
   const config = client.config
 
   if (!isStaff(interaction, config)) {
-    return interaction.reply({ content: "❌ Você não tem permissão para usar este comando.", flags: MessageFlags.Ephemeral })
+    return interaction.reply({
+      flags: CV2_EPHEMERAL,
+      components: [container(COLORS.DANGER).addTextDisplayComponents(text("❌ Você não tem permissão para usar este comando."))],
+    })
   }
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
   const stats = getStats()
-  const suspicious = getAllSuspiciousUsers()
-  const pending = getPendingAnnouncements()
-  const container = buildStaffPanelC2(interaction.guild, stats, pending.length, suspicious.length)
-  const components = buildMainPanelComponents(stats)
-  await interaction.editReply({ components: [appendRows(container, ...components)], flags: C2_FLAG })
+  await interaction.editReply(buildMainPanel(interaction.guild, stats))
 }
 
 // ─────────────────────────────────────────────
@@ -199,11 +173,7 @@ export async function handleStaffQuickButton(interaction, action, client) {
   } else if (action === "back") {
     await interaction.deferUpdate()
     const stats = getStats()
-    const suspicious = getAllSuspiciousUsers()
-    const pending = getPendingAnnouncements()
-    const container = buildStaffPanelC2(interaction.guild, stats, pending.length, suspicious.length)
-    const components = buildMainPanelComponents(stats)
-    await interaction.editReply({ components: [appendRows(container, ...components)], flags: C2_FLAG })
+    await interaction.editReply(buildMainPanel(interaction.guild, stats))
   } else if (action.startsWith("sus_next_")) {
     await interaction.deferUpdate()
     const page = parseInt(action.split("_")[2]) + 1
@@ -222,14 +192,44 @@ export async function handleStaffQuickButton(interaction, action, client) {
 async function showBlacklistPanel(interaction, client) {
   const blacklist = getBlacklist()
 
-  const blContainer = buildBlacklistPanelC2(blacklist)
+  const blLines = blacklist.slice(0, 10).map((entry) => {
+    const date = new Date(entry.created_at).toLocaleDateString("pt-BR")
+    return `<@${entry.user_id}> — ${entry.reason} · por <@${entry.created_by}> · ${date}`
+  })
+
+  const descTop = blacklist.length === 0
+    ? "A blacklist está vazia."
+    : `**${blacklist.length}** usuário(s) bloqueados atualmente.`
+  const footerNote = blacklist.length > 10 ? `\n-# Mostrando 10 de ${blacklist.length} usuários` : ""
+  const blText = `## 🚫 Gerenciamento de Blacklist\n${descTop}${blLines.length ? "\n" + blLines.join("\n") : ""}${footerNote}`
+
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("staff_bl_add").setLabel("Adicionar à BL").setStyle(ButtonStyle.Danger).setEmoji("➕"),
-    new ButtonBuilder().setCustomId("staff_bl_remove").setLabel("Remover da BL").setStyle(ButtonStyle.Success).setEmoji("➖"),
-    new ButtonBuilder().setCustomId("staff_bl_check").setLabel("Verificar usuário").setStyle(ButtonStyle.Secondary).setEmoji("🔍"),
-    new ButtonBuilder().setCustomId("staff_quick_back").setLabel("Voltar").setStyle(ButtonStyle.Secondary).setEmoji("◀️"),
+    new ButtonBuilder()
+      .setCustomId("staff_bl_add")
+      .setLabel("Adicionar à BL")
+      .setStyle(ButtonStyle.Danger)
+      .setEmoji("➕"),
+    new ButtonBuilder()
+      .setCustomId("staff_bl_remove")
+      .setLabel("Remover da BL")
+      .setStyle(ButtonStyle.Success)
+      .setEmoji("➖"),
+    new ButtonBuilder()
+      .setCustomId("staff_bl_check")
+      .setLabel("Verificar usuário")
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji("🔍"),
+    new ButtonBuilder()
+      .setCustomId("staff_quick_back")
+      .setLabel("Voltar")
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji("◀️"),
   )
-  await interaction.editReply({ components: [appendRows(blContainer, row)], flags: C2_FLAG })
+
+  await interaction.editReply({
+    flags: CV2,
+    components: [container(COLORS.DANGER).addTextDisplayComponents(text(blText)).addActionRowComponents(row)],
+  })
 }
 
 // ─────────────────────────────────────────────
@@ -333,7 +333,7 @@ export async function handleBlacklistAddSubmit(interaction, client) {
   }
 
   if (isBlacklisted(user.id)) {
-    return interaction.editReply({ content: `**${user.tag}** já está na blacklist.` })
+    return interaction.editReply({ content: `**${user.username}** já está na blacklist.` })
   }
 
   addToBlacklist(user.id, reason, interaction.user.id)
@@ -341,26 +341,24 @@ export async function handleBlacklistAddSubmit(interaction, client) {
 
   try {
     await user.send({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(COLORS.DANGER)
-          .setTitle("⛔ Você foi adicionado à Blacklist")
-          .setDescription(`Você não poderá criar anúncios ou negociar neste servidor.`)
-          .addFields({ name: "Motivo", value: reason, inline: false })
-          .setTimestamp(),
-      ],
+      flags: CV2,
+      components: [container(COLORS.DANGER).addTextDisplayComponents(text(
+        `## ⛔ Você foi adicionado à Blacklist\nVocê não poderá criar anúncios ou negociar neste servidor.\n**Motivo:** ${reason}`
+      ))],
     })
   } catch { /* DM fechada */ }
 
   await logAction(client, "blacklist_add", {
     userId: interaction.user.id,
     targetId: user.id,
-    details: `**Usuário:** ${user.tag}\n**Motivo:** ${reason}`,
+    details: `**Usuário:** ${user.username} (${user.id})\n**Motivo:** ${reason}`,
   })
 
   await interaction.editReply({
-    components: [box(`## ✅ Usuário adicionado à Blacklist\n\n👤 **Usuário:** ${user.tag}   📋 **Motivo:** ${reason}   ➕ **Por:** ${interaction.user.tag}`, 0xFF4444)],
-    flags: C2_FLAG,
+    flags: CV2_EPHEMERAL,
+    components: [container(COLORS.DANGER).addTextDisplayComponents(text(
+      `## ✅ Usuário adicionado à Blacklist\n**Usuário:** ${user.username} (${user.id})\n**Motivo:** ${reason}\n**Adicionado por:** ${interaction.user.username}`
+    ))],
   })
 }
 
@@ -379,33 +377,32 @@ export async function handleBlacklistRemoveSubmit(interaction, client) {
   }
 
   if (!isBlacklisted(user.id)) {
-    return interaction.editReply({ content: `**${user.tag}** não está na blacklist.` })
+    return interaction.editReply({ content: `**${user.username}** não está na blacklist.` })
   }
 
   removeFromBlacklist(user.id)
-  addLog("blacklist_remove", interaction.user.id, user.id, `Removido por ${interaction.user.tag}`)
+  addLog("blacklist_remove", interaction.user.id, user.id, `Removido por ${interaction.user.username}`)
 
   try {
     await user.send({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(COLORS.SUCCESS)
-          .setTitle("✅ Você foi removido da Blacklist")
-          .setDescription("Você pode usar os serviços normalmente agora.")
-          .setTimestamp(),
-      ],
+      flags: CV2,
+      components: [container(COLORS.SUCCESS).addTextDisplayComponents(text(
+        `## ✅ Você foi removido da Blacklist\nVocê pode usar os serviços normalmente agora.`
+      ))],
     })
   } catch { /* DM fechada */ }
 
   await logAction(client, "blacklist_remove", {
     userId: interaction.user.id,
     targetId: user.id,
-    details: `**Usuário:** ${user.tag}\n**Removido por:** ${interaction.user.tag}`,
+    details: `**Usuário:** ${user.username} (${user.id})\n**Removido por:** ${interaction.user.username}`,
   })
 
   await interaction.editReply({
-    components: [box(`## ✅ Usuário removido da Blacklist\n\n👤 **Usuário:** ${user.tag}   ➖ **Por:** ${interaction.user.tag}`, 0x00D166)],
-    flags: C2_FLAG,
+    flags: CV2_EPHEMERAL,
+    components: [container(COLORS.SUCCESS).addTextDisplayComponents(text(
+      `## ✅ Usuário removido da Blacklist\n**Usuário:** ${user.username} (${user.id})\n**Removido por:** ${interaction.user.username}`
+    ))],
   })
 }
 
@@ -427,19 +424,19 @@ export async function handleBlacklistCheckSubmit(interaction, client) {
 
   if (!entry) {
     return interaction.editReply({
-      components: [box(`## 🔍 Verificação de Blacklist\n\n✅ **${user.tag}** não está na blacklist.`, 0x00D166)],
-      flags: C2_FLAG,
+      flags: CV2_EPHEMERAL,
+      components: [container(COLORS.SUCCESS).addTextDisplayComponents(text(
+        `## 🔍 Verificação de Blacklist\n✅ **${user.username}** não está na blacklist.`
+      ))],
     })
   }
 
+  const blDate = new Date(entry.created_at).toLocaleDateString("pt-BR")
   await interaction.editReply({
-    components: [box(
-      "## 🔍 Verificação de Blacklist\n\n" +
-      `🚫 **${user.tag}** está na blacklist.\n\n` +
-      `**Motivo:** ${entry.reason}   **Por:** <@${entry.created_by}>   **Data:** ${new Date(entry.created_at).toLocaleDateString("pt-BR")}`,
-      0xFF4444
-    )],
-    flags: C2_FLAG,
+    flags: CV2_EPHEMERAL,
+    components: [container(COLORS.DANGER).addTextDisplayComponents(text(
+      `## 🔍 Verificação de Blacklist\n🚫 **${user.username}** está na blacklist.\n**Motivo:** ${entry.reason}\n**Adicionado por:** <@${entry.created_by}> · **Data:** ${blDate}`
+    ))],
   })
 }
 
@@ -451,13 +448,12 @@ async function showAnnouncementsPanel(interaction, client) {
   const pending = getPendingAnnouncements()
   const annStats = getAnnouncementStats()
 
-  const annContent =
-    "## 📢 Gerenciamento de Anúncios\n\n" +
-    "Visualize e gerencie os anúncios do servidor.\n\n" +
-    `📋 **Pendentes:** **${annStats.pending}** ${annStats.pending > 0 ? "⚠️" : ""}   ` +
-    `✅ **Ativos:** **${annStats.approved}**   ` +
-    `💸 **Vendidos:** **${annStats.sold}**\n` +
-    `❌ **Recusados:** **${annStats.rejected}**   📦 **Total:** **${annStats.total}**`
+  const annText =
+    `## 📢 Gerenciamento de Anúncios\nVisualize e gerencie os anúncios do servidor.\n` +
+    `**Resumo:**\n📋 Pendentes: **${annStats.pending}** ${annStats.pending > 0 ? "⚠️" : ""}\n` +
+    `✅ Ativos: **${annStats.approved}**\n💸 Vendidos: **${annStats.sold}**\n` +
+    `❌ Recusados: **${annStats.rejected}**\n📦 Total: **${annStats.total}**`
+
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("staff_ann_pending")
@@ -476,32 +472,72 @@ async function showAnnouncementsPanel(interaction, client) {
       .setEmoji("◀️"),
   )
 
-  await interaction.editReply({ components: [boxWithRows(annContent, 0xFFA500, [row])], flags: C2_FLAG })
+  await interaction.editReply({
+    flags: CV2,
+    components: [container(COLORS.WARNING).addTextDisplayComponents(text(annText)).addActionRowComponents(row)],
+  })
 }
 
-async function showPendingAnnouncements(interaction, client) {
-  const pending = getPendingAnnouncements()
+async function showPendingAnnouncements(interaction, client, page = 0) {
+  const PAGE_SIZE = 5
+  const all = getPendingAnnouncements()
+  const totalPages = Math.max(1, Math.ceil(all.length / PAGE_SIZE))
+  const safePage = Math.min(Math.max(0, page), totalPages - 1)
+  const pending = all.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE)
 
-  if (pending.length === 0) {
+  if (all.length === 0) {
     const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("staff_quick_back").setLabel("Voltar ao Painel").setStyle(ButtonStyle.Secondary).setEmoji("◀️"),
+      new ButtonBuilder()
+        .setCustomId("staff_quick_back")
+        .setLabel("Voltar ao Painel")
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji("◀️"),
     )
+
     return interaction.editReply({
-      components: [boxWithRows("## 📋 Anúncios Pendentes\n\n✅ Nenhum anúncio aguardando aprovação no momento.", 0x00D166, [row])],
-      flags: C2_FLAG,
+      flags: CV2,
+      components: [container(COLORS.SUCCESS).addTextDisplayComponents(text(
+        "## 📋 Anúncios Pendentes\n✅ Nenhum anúncio aguardando aprovação no momento."
+      )).addActionRowComponents(row)],
     })
   }
 
-  const pendLines = pending.slice(0, 8).map(a => {
+  const pendingLines = pending.map((a) => {
     const date = new Date(a.created_at).toLocaleString("pt-BR")
-    return `**#${a.id} — ${a.nick}** — Vendedor: <@${a.user_id}> · R$ ${formatValor(a.valor)} · ${date}`
-  }).join("\n")
-  const pendFooter = pending.length > 8 ? `\n\n-# Mostrando 8 de ${pending.length}` : ""
-  const pendContent = `## 📋 Anúncios Pendentes — ${pending.length} aguardando\n\n${pendLines}${pendFooter}`
+    return `**#${a.id} — ${a.nick}** · Vendedor: <@${a.user_id}> · R$ ${formatValor(a.valor)}\n${date}`
+  })
+  const footerNote = totalPages > 1
+    ? `\n-# Página ${safePage + 1} de ${totalPages} · Total: ${all.length} pendente(s)`
+    : `\n-# Total: ${all.length} pendente(s)`
+  const pendingText = `## 📋 Anúncios Pendentes — ${all.length} aguardando\n${pendingLines.join("\n―\n")}${footerNote}`
+
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("staff_quick_back").setLabel("Voltar ao Painel").setStyle(ButtonStyle.Secondary).setEmoji("◀️"),
+    new ButtonBuilder()
+      .setCustomId(`staff_ann_pendprev_${safePage}`)
+      .setLabel("◀ Anterior")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(safePage === 0),
+    new ButtonBuilder()
+      .setCustomId(`staff_ann_pendinfo`)
+      .setLabel(`${safePage + 1} / ${totalPages}`)
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(true),
+    new ButtonBuilder()
+      .setCustomId(`staff_ann_pendnext_${safePage}`)
+      .setLabel("Próximo ▶")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(safePage >= totalPages - 1),
+    new ButtonBuilder()
+      .setCustomId("staff_quick_back")
+      .setLabel("Voltar ao Painel")
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji("◀️"),
   )
-  await interaction.editReply({ components: [boxWithRows(pendContent, 0xFFA500, [row])], flags: C2_FLAG })
+
+  await interaction.editReply({
+    flags: CV2,
+    components: [container(COLORS.WARNING).addTextDisplayComponents(text(pendingText)).addActionRowComponents(row)],
+  })
 }
 
 export async function handleAnnouncementsButton(interaction, action, client) {
@@ -511,6 +547,14 @@ export async function handleAnnouncementsButton(interaction, action, client) {
   await interaction.deferUpdate()
 
   if (action === "pending") await showPendingAnnouncements(interaction, client)
+  else if (action.startsWith("pendnext_")) {
+    const page = parseInt(action.split("_")[1]) + 1
+    await showPendingAnnouncements(interaction, client, page)
+  }
+  else if (action.startsWith("pendprev_")) {
+    const page = Math.max(0, parseInt(action.split("_")[1]) - 1)
+    await showPendingAnnouncements(interaction, client, page)
+  }
   else if (action === "history") await showAnnouncementHistory(interaction, client, 0)
   else if (action.startsWith("histnext_")) {
     const page = parseInt(action.split("_")[1]) + 1
@@ -537,16 +581,17 @@ async function showAnnouncementHistory(interaction, client, page = 0) {
     expired: "⌛ Expirado",
   }
 
-  const histLines = pageItems.map(a => {
+  const histLines = pageItems.map((a) => {
     const status = statusLabels[a.status] || a.status
     const date = new Date(a.created_at).toLocaleDateString("pt-BR")
-    return `**#${a.id} — ${a.nick}** [${status}] — <@${a.user_id}> · R$ ${formatValor(a.valor)} · ${date}`
-  }).join("\n")
-  const histFooter = totalPages > 1 ? `\n\n-# Página ${page + 1} de ${totalPages} · Total: ${total}` : ""
-  const histContent =
-    `## 📜 Histórico de Anúncios\n\n` +
-    `**Total:** ${annStats.total}  ✅ Ativos: ${annStats.approved}  💸 Vendidos: ${annStats.sold}  ❌ Recusados: ${annStats.rejected}\n\n` +
-    histLines + histFooter
+    return `**#${a.id} — ${a.nick}** [${status}]\nVendedor: <@${a.user_id}> · R$ ${formatValor(a.valor)} · ${date}`
+  }).join("\n\u2015\n")
+
+  const footerNote = totalPages > 1 ? `\n-# Página ${page + 1} de ${totalPages} · Total: ${total}` : ""
+  const histText =
+    `## 📜 Histórico de Anúncios\n` +
+    `**Total:** ${annStats.total} anúncio(s) — ✅ Ativos: ${annStats.approved}  💸 Vendidos: ${annStats.sold}  ❌ Recusados: ${annStats.rejected}\n\n` +
+    histLines + footerNote
 
   const rows = [
     new ActionRowBuilder().addComponents(
@@ -573,7 +618,10 @@ async function showAnnouncementHistory(interaction, client, page = 0) {
     ),
   ]
 
-  await interaction.editReply({ components: [appendRows(box(histContent, 0x5865F2), ...rows)], flags: C2_FLAG })
+  await interaction.editReply({
+    flags: CV2,
+    components: [container(COLORS.PRIMARY).addTextDisplayComponents(text(histText)).addActionRowComponents(rows[0])],
+  })
 }
 
 // ─────────────────────────────────────────────
@@ -592,41 +640,61 @@ async function showStatsPanel(interaction, client) {
 
   const totalTickets = stats.totalTickets || 1
 
-  const statsContent =
-    `## 📊 Estatísticas do Servidor\n\n` +
+  const statsText =
+    `## 📊 Estatísticas do Servidor\n` +
     `**🎫 Tickets**\n` +
-    `> Total: **${stats.totalTickets}**  Abertos: **${stats.openTickets}** ${bar(stats.openTickets, totalTickets)}  Fechados: **${stats.closedTickets}** ${bar(stats.closedTickets, totalTickets)}\n\n` +
+    `Total: **${stats.totalTickets}**\n` +
+    `Abertos:  ${bar(stats.openTickets, totalTickets)} ${stats.openTickets}\n` +
+    `Fechados: ${bar(stats.closedTickets, totalTickets)} ${stats.closedTickets}\n\n` +
     `**📢 Anúncios**\n` +
-    `> Total: **${stats.totalAnnouncements}**  Ativos: **${stats.activeAnnouncements}**  Pendentes: **${stats.pendingAnnouncements}**  Vendidos: **${stats.soldAnnouncements}**\n\n` +
+    `Total: **${stats.totalAnnouncements}** — Ativos: **${stats.activeAnnouncements}**  Pendentes: **${stats.pendingAnnouncements}**  Vendidos: **${stats.soldAnnouncements}**\n\n` +
     `**🤝 Negociações**\n` +
-    `> Total: **${stats.totalNegotiations}**  Concluídas: **${stats.completedNegotiations}**  Blacklist: **${stats.blacklistedUsers}**\n\n` +
-    `-# Solicitado por ${interaction.user.tag}`
+    `Total: **${stats.totalNegotiations}** — Concluídas: **${stats.completedNegotiations}**  Blacklist: **${stats.blacklistedUsers}**\n` +
+    `-# Solicitado por ${interaction.user.username}`
 
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("staff_stats_weekly").setLabel("Relatório Semanal").setStyle(ButtonStyle.Primary).setEmoji("📈"),
-    new ButtonBuilder().setCustomId("staff_quick_back").setLabel("Voltar ao Painel").setStyle(ButtonStyle.Secondary).setEmoji("◀️"),
+    new ButtonBuilder()
+      .setCustomId("staff_stats_weekly")
+      .setLabel("Relatório Semanal")
+      .setStyle(ButtonStyle.Primary)
+      .setEmoji("📈"),
+    new ButtonBuilder()
+      .setCustomId("staff_quick_back")
+      .setLabel("Voltar ao Painel")
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji("◀️"),
   )
 
-  await interaction.editReply({ components: [boxWithRows(statsContent, 0x5865F2, [row])], flags: C2_FLAG })
+  await interaction.editReply({
+    flags: CV2,
+    components: [container(COLORS.PRIMARY).addTextDisplayComponents(text(statsText)).addActionRowComponents(row)],
+  })
 }
 
 async function showWeeklyReport(interaction, client) {
   const stats = getWeeklyStats()
   const topSeller = stats.topSeller ? `<@${stats.topSeller[0]}> (${stats.topSeller[1]} vendas)` : "Nenhum"
 
-  const weeklyContent =
-    `## 📈 Relatório — Últimos 7 Dias\n\n` +
+  const weeklyText =
+    `## 📈 Relatório — Últimos 7 Dias\n` +
     `🎫 **Tickets** — Novos: **${stats.newTickets}**  Fechados: **${stats.closedTickets}**\n` +
     `📢 **Anúncios** — Novos: **${stats.newAnnouncements}**  Aprovados: **${stats.approvedAds}**  Vendidos: **${stats.soldCount}**\n` +
     `💰 **Volume** — R$ **${stats.totalRevenue}** em **${stats.completedNegs}** venda(s)\n` +
-    `⭐ **Avaliações** — **${stats.newRatings}** novas  Média: **${stats.avgRating}**\n` +
+    `⭐ **Avaliações** — **${stats.newRatings}** novas · Média: **${stats.avgRating}**\n` +
     `🏆 **Top Vendedor** — ${topSeller}`
 
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("staff_quick_back").setLabel("Voltar ao Painel").setStyle(ButtonStyle.Secondary).setEmoji("◀️"),
+    new ButtonBuilder()
+      .setCustomId("staff_quick_back")
+      .setLabel("Voltar ao Painel")
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji("◀️"),
   )
 
-  await interaction.editReply({ components: [boxWithRows(weeklyContent, 0x7289DA, [row])], flags: C2_FLAG })
+  await interaction.editReply({
+    flags: CV2,
+    components: [container(COLORS.INFO).addTextDisplayComponents(text(weeklyText)).addActionRowComponents(row)],
+  })
 }
 
 export async function handleStatsButton(interaction, action, client) {
@@ -646,21 +714,40 @@ async function showConfigPanel(interaction, client) {
   const config = client.config
 
   const pixEnabled = isPixVerificationEnabled(client)
-  const cfgContent =
-    `## ⚙️ Configurações do Bot\n\n` +
-    `**Max Anúncios Ativos:** ${config.limits?.maxActiveAnnouncements ?? 3}\n` +
-    `**Expiração Anúncio (dias):** ${config.limits?.announcementExpirationDays ?? 30}\n` +
-    `**Max Negociações/Usuário:** ${config.limits?.maxNegotiationsPerUser ?? 5}\n` +
-    `**Limite Intermediário (R$):** ${config.limits?.escrowValueThreshold ?? 500}\n` +
-    `**Verificação PIX:** ${pixEnabled ? "✅ Ativa" : "❌ Inativa"}\n\n` +
-    `-# Altere via botões abaixo`
-    
+
+  const configText =
+    `## ⚙️ Configurações do Bot\n` +
+    `Canal de Anúncios: <#${config.channels.anuncios}>\n` +
+    `Canal de Logs: <#${config.channels.logs}>\n` +
+    `Canal de Review: ${config.channels.review ? `<#${config.channels.review}>` : "⚠️ **Não configurado** — anúncios não serão enviados para revisão!"}\n` +
+    `Cargo Staff: <@&${config.roles.staff}>\n` +
+    `Max Anúncios Ativos: **${config.limits?.maxActiveAnnouncements ?? 3}**\n` +
+    `Expiração (dias): **${config.limits?.announcementExpirationDays ?? 30}**\n` +
+    `Limite Intermediário (R$): **${config.limits?.escrowValueThreshold ?? 500}**\n` +
+    `Max Negociações/Usuário: **${config.limits?.maxNegotiationsPerUser ?? 5}**\n` +
+    `-# Use o botão abaixo para alterar valores`
+
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("staff_config_edit").setLabel("✏️ Alterar Config").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`staff_config_pix_${pixEnabled ? "off" : "on"}`).setLabel(`${pixEnabled ? "Desativar" : "Ativar"} PIX`).setStyle(pixEnabled ? ButtonStyle.Danger : ButtonStyle.Success),
-    new ButtonBuilder().setCustomId("staff_quick_back").setLabel("◀ Voltar").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("staff_config_edit")
+      .setLabel("Alterar Configuração")
+      .setStyle(ButtonStyle.Primary)
+      .setEmoji("✏️"),
+    new ButtonBuilder()
+      .setCustomId("staff_config_pix_status")
+      .setLabel(`${pixEnabled ? "🟢" : "🔴"} Verificação PIX`)
+      .setStyle(pixEnabled ? ButtonStyle.Success : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("staff_quick_back")
+      .setLabel("Voltar ao Painel")
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji("◀️"),
   )
-  await interaction.editReply({ components: [boxWithRows(cfgContent, 0x7289DA, [row])], flags: C2_FLAG })
+
+  await interaction.editReply({
+    flags: CV2,
+    components: [container(COLORS.INFO).addTextDisplayComponents(text(configText)).addActionRowComponents(row)],
+  })
 }
 
 export async function handleConfigButton(interaction, action, client) {
@@ -668,29 +755,20 @@ export async function handleConfigButton(interaction, action, client) {
   if (!isStaff(interaction, config)) return interaction.reply({ content: "Sem permissão.", flags: MessageFlags.Ephemeral })
 
   // Toggle PIX Verification
-  // action can be: 'pix_toggle' (from status panel), 'pix_on' or 'pix_off' (from config panel button)
-  if (action === "pix_toggle" || action === "pix_on" || action === "pix_off") {
+  if (action === "pix_toggle") {
     const currentlyEnabled = isPixVerificationEnabled(client)
-    // pix_on forces enable, pix_off forces disable, pix_toggle flips
-    const newState = action === "pix_on" ? true : action === "pix_off" ? false : !currentlyEnabled
+    const newState = !currentlyEnabled
     togglePixVerification(newState)
     // Update in-memory config too
     if (!client.config.features) client.config.features = {}
     client.config.features.pixVerification = newState
 
-    await interaction.update({
-      embeds: [buildPixStatusEmbed(newState)],
-      components: [new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`staff_config_pix_${newState ? "off" : "on"}`)
-          .setLabel(newState ? "🔴 Desativar Verificação PIX" : "🟢 Ativar Verificação PIX")
-          .setStyle(newState ? ButtonStyle.Danger : ButtonStyle.Success),
-        new ButtonBuilder()
-          .setCustomId("staff_config_back")
-          .setLabel("↩ Voltar")
-          .setStyle(ButtonStyle.Secondary),
-      )],
-    })
+    const sc = buildPixStatusContainer(newState)
+      .addActionRowComponents(createRow(
+        createButton({ customId: "staff_config_pix_toggle", label: newState ? "🔴 Desativar Verificação PIX" : "🟢 Ativar Verificação PIX", style: newState ? ButtonStyle.Danger : ButtonStyle.Success }),
+        createButton({ customId: "staff_config_back", label: "↩ Voltar", style: ButtonStyle.Secondary }),
+      ))
+    await interaction.update({ flags: CV2, components: [sc] })
     return
   }
 
@@ -702,20 +780,12 @@ export async function handleConfigButton(interaction, action, client) {
 
   if (action === "pix_status") {
     const enabled = isPixVerificationEnabled(client)
-    await interaction.reply({
-      embeds: [buildPixStatusEmbed(enabled)],
-      components: [new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId("staff_config_pix_toggle")
-          .setLabel(enabled ? "🔴 Desativar" : "🟢 Ativar")
-          .setStyle(enabled ? ButtonStyle.Danger : ButtonStyle.Success),
-        new ButtonBuilder()
-          .setCustomId("staff_config_back")
-          .setLabel("↩ Voltar")
-          .setStyle(ButtonStyle.Secondary),
-      )],
-      flags: MessageFlags.Ephemeral,
-    })
+    const pc = buildPixStatusContainer(enabled)
+      .addActionRowComponents(createRow(
+        createButton({ customId: "staff_config_pix_toggle", label: enabled ? "🔴 Desativar" : "🟢 Ativar", style: enabled ? ButtonStyle.Danger : ButtonStyle.Success }),
+        createButton({ customId: "staff_config_back", label: "↩ Voltar", style: ButtonStyle.Secondary }),
+      ))
+    await interaction.reply({ flags: CV2_EPHEMERAL, components: [pc] })
     return
   }
 
@@ -731,7 +801,7 @@ export async function handleConfigButton(interaction, action, client) {
           .setLabel("Chave (ex: limits.maxActiveAnnouncements)")
           .setStyle(TextInputStyle.Short)
           .setPlaceholder(
-            "limits.maxActiveAnnouncements / limits.escrowValueThreshold / ..."
+            "limits.maxActiveAnnouncements / channels.review / ..."
           )
           .setRequired(true)
       ),
@@ -762,6 +832,7 @@ export async function handleConfigSubmit(interaction, client) {
     "limits.escrowValueThreshold": "float",
     "antiScam.maxSameAccountAds": "int",
     "antiScam.suspiciousValueThreshold": "float",
+    "channels.review": "string",
   }
 
   if (!allowedKeys[chave]) {
@@ -772,10 +843,19 @@ export async function handleConfigSubmit(interaction, client) {
   }
 
   const tipo = allowedKeys[chave]
-  const valorParsed = tipo === "int" ? parseInt(valor) : (valor.includes(",") ? parseFloat(valor.replace(/\./g, "").replace(",", ".")) : parseFloat(valor))
 
-  if (isNaN(valorParsed) || valorParsed < 0) {
-    return interaction.editReply({ content: "❌ Valor inválido. Use apenas números positivos." })
+  let valorParsed
+  if (tipo === "string") {
+    // Para IDs de canal: aceitar apenas dígitos
+    valorParsed = valor.replace(/[^0-9]/g, "")
+    if (!valorParsed) {
+      return interaction.editReply({ content: "❌ Valor inválido. Para canais, informe apenas o ID numérico do canal (ex: 1234567890123456789)." })
+    }
+  } else {
+    valorParsed = tipo === "int" ? parseInt(valor) : (valor.includes(",") ? parseFloat(valor.replace(/\./g, "").replace(",", ".")) : parseFloat(valor))
+    if (isNaN(valorParsed) || valorParsed < 0) {
+      return interaction.editReply({ content: "❌ Valor inválido. Use apenas números positivos." })
+    }
   }
 
   const keys = chave.split(".")
@@ -794,12 +874,10 @@ export async function handleConfigSubmit(interaction, client) {
   })
 
   await interaction.editReply({
-    components: [box(
-      `## ✅ Configuração Atualizada\n\n` +
-      `**Chave:** ${chave}   **Valor Anterior:** ${String(oldValue)}   **Novo Valor:** ${String(valorParsed)}`,
-      0x00D166
-    )],
-    flags: C2_FLAG,
+    flags: CV2_EPHEMERAL,
+    components: [container(COLORS.SUCCESS).addTextDisplayComponents(text(
+      `## ✅ Configuração Atualizada\n**Chave:** ${chave}\n**Valor Anterior:** ${oldValue}\n**Novo Valor:** ${valorParsed}`
+    ))],
   })
 }
 
@@ -815,7 +893,7 @@ async function showSuspiciousPanel(interaction, client, page = 0) {
 
   let susContent
   if (suspicious.length === 0) {
-    susContent = "## 🔍 Usuários Suspeitos\n\n✅ Nenhum usuário suspeito detectado."
+    susContent = "## 🔍 Usuários Suspeitos\n✅ Nenhum usuário suspeito detectado."
   } else {
     const susLines = pageItems.map(({ uid, flags }) => {
       const flagText = flags.map((f) => {
@@ -823,11 +901,11 @@ async function showSuspiciousPanel(interaction, client, page = 0) {
         if (f.type === "shared_uuid") return `⚠️ UUID compartilhado (${f.sellers.length} vendedores)`
         if (f.type === "many_cancelled_negotiations") return `⚠️ ${f.count} negociações canceladas`
         return `⚠️ ${f.type}`
-      }).join("  ")
-      return `**<@${uid}>** — ${flagText}`
+      }).join(" | ")
+      return `<@${uid}> — ${flagText}`
     }).join("\n")
-    const susFooter = totalPages > 1 ? `\n\n-# Página ${page + 1} de ${totalPages} · Total: ${suspicious.length}` : ""
-    susContent = `## 🔍 Usuários Suspeitos\n\n**${suspicious.length}** usuário(s) com atividade suspeita.\n\n${susLines}${susFooter}`
+    const footerNote = totalPages > 1 ? `\n-# Página ${page + 1} de ${totalPages} · Total: ${suspicious.length}` : ""
+    susContent = `## 🔍 Usuários Suspeitos\n**${suspicious.length}** usuário(s) com atividade suspeita detectada.\n\n${susLines}${footerNote}`
   }
 
   const navButtons = totalPages > 1 ? [
@@ -857,5 +935,10 @@ async function showSuspiciousPanel(interaction, client, page = 0) {
       .setEmoji("◀️"),
   )
 
-  await interaction.editReply({ components: [boxWithRows(susContent, suspicious.length > 0 ? 0xFF4444 : 0x00D166, [row])], flags: C2_FLAG })
+  await interaction.editReply({
+    flags: CV2,
+    components: [container(suspicious.length > 0 ? COLORS.DANGER : COLORS.SUCCESS)
+      .addTextDisplayComponents(text(susContent))
+      .addActionRowComponents(row)],
+  })
 }

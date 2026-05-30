@@ -1,96 +1,131 @@
-# minecraft-marketplace-bot
+# 🤖 Bot Discord — Marketplace de Contas Minecraft
 
-Bot Discord completo para compra e venda de contas Minecraft. Sistema de anúncios com skin do player, tickets de suporte, fluxo de negociação com escrow, verificação de pagamento via Pix e painel de moderação para staff.
+Bot para gerenciar anúncios, negociações, tickets e reputação de contas Minecraft.
 
-## Funcionalidades
+---
 
-- **Anúncios** — criação, edição, bump manual e auto-bump de contas Minecraft com exibição da skin
-- **Negociação** — fluxo completo com escrow, envio de comprovante, ofertas, confirmação de entrega e recebimento
-- **Tickets** — sistema de suporte com transcrição automática
-- **Verificação Pix** — confirmação de pagamento com comprovante
-- **Painel Staff** — moderação de anúncios, blacklist, intermediação de negociações
-- **Favoritos & Alertas** — usuários salvam anúncios e recebem notificações de preço
-- **Meus Anúncios** — painel pessoal com ações contextuais via select menu
-- **Paginação** — listagens com navegação por botões
-- **Backup automático** — cópia periódica do banco SQLite
-- **Healthcheck HTTP** — endpoint para monitoramento de uptime
-- **Discord Components v2** — UI moderna com containers, thumbnails e select menus
+## 📋 Pré-requisitos
 
-## Stack
+- **Node.js** >= 22.13.0
+- **npm** (incluso com o Node.js)
+- **PM2** (para produção): `npm install -g pm2`
+- Um **Bot de Discord** criado no [Discord Developer Portal](https://discord.com/developers/applications)
 
-- **discord.js v14**
-- **better-sqlite3** — banco de dados local
-- **node-cron** — agendador de tarefas (auto-bump, limpeza, backup)
-- **PM2** — gerenciamento de processo em produção
-- **Node.js ≥ 22.13**
+---
 
-## Instalação
+## ⚙️ Configuração
+
+### 1. Instalar dependências
 
 ```bash
 npm install
 ```
 
-Crie um arquivo `.env` na raiz:
+### 2. Criar os canais no seu servidor Discord
+
+Crie os seguintes canais antes de configurar:
+
+| Canal | Finalidade |
+|---|---|
+| `#anuncios` | Anúncios públicos de contas |
+| `#logs` | Logs internos do bot |
+| `#antiscam` | Alertas de atividade suspeita |
+| `#vendas` | Confirmações públicas de venda |
+| `#arquivo-midia` | Armazena screenshots dos anúncios (pode ser privado) |
+
+> O canal `#arquivo-midia` deve ser **visível apenas para o bot e staff**. As fotos dos anúncios são salvas lá para não expirarem.
+
+### 3. Preencher o arquivo `.env`
 
 ```env
+# ── CREDENCIAIS DO BOT ─────────────────────────────────────────────
 DISCORD_TOKEN=seu_token_aqui
-DISCORD_CLIENT_ID=id_do_bot
+DISCORD_CLIENT_ID=seu_client_id
 DISCORD_GUILD_ID=id_do_servidor
+
+# ── IDs DE CANAIS (botão direito no canal → Copiar ID) ─────────────
+CHANNEL_ANUNCIOS=
+CHANNEL_LOGS=
+CHANNEL_ANTISCAM=
+CHANNEL_VENDAS=
+CHANNEL_MEDIA_ARCHIVE=
+
+# ── IDs DE CARGOS ──────────────────────────────────────────────────
+ROLE_STAFF=
+
+# ── IDs DE CATEGORIAS ──────────────────────────────────────────────
+CATEGORY_TICKETS=
+CATEGORY_NEGOCIACOES=
+
+# ── OPCIONAIS ──────────────────────────────────────────────────────
 HEALTHCHECK_PORT=3000
 DEBUG=false
 ```
 
-## Uso
+> **Nenhum ID vai mais no `config.json`** — tudo fica no `.env` para maior segurança.
+
+### 4. Iniciar o bot
 
 ```bash
-# Desenvolvimento (hot reload)
-npm run dev
-
-# Produção simples
 npm start
-
-# Produção com PM2
-npm run start:prod
-
-# Ver logs
-npm run logs
-
-# Monitorar
-npm run monit
 ```
 
-## Estrutura
+### 5. Configurar o painel de tickets
+
+No Discord, use o comando:
+```
+/setuppainel #seu-canal
+```
+
+---
+
+## 🚀 Produção com PM2
+
+```bash
+npm run start:prod   # iniciar
+npm run logs         # ver logs
+npm run restart      # reiniciar
+npm run stop         # parar
+pm2 startup          # iniciar no boot
+pm2 save
+```
+
+---
+
+## 📦 Funcionalidades
+
+- **Tickets** — Suporte, Dúvidas, Denúncia, Anunciar Conta
+- **Anúncios** — Com screenshot obrigatória, validação de tamanho, foto persistente
+- **Negociações** — Canal privado, escrow, comprovante PIX verificado
+- **Canal de Vendas** — Toda venda confirmada é postada publicamente
+- **Reputação** — Avaliação pós-venda, ranking, perfil
+- **Alertas & Favoritos** — Notificações automáticas; vendedor é avisado quando alguém favorita
+- **Anti-Scam** — Blacklist, UUID duplicado, PIX verificado, flood de tickets bloqueado
+- **Staff** — Painel unificado, blacklist, config, estatísticas
+
+---
+
+## 🔑 Permissões necessárias no Discord
+
+- Ler e enviar mensagens
+- Gerenciar canais e cargos
+- Usar comandos de barra (Slash Commands)
+- Anexar arquivos / Embeds
+
+---
+
+## 🩺 Healthcheck
 
 ```
-├── index.js                  # Entry point
-├── commands/
-│   └── setuppainel.js        # Comando de setup do painel
-├── handlers/
-│   ├── anuncioHandler.js     # Criação e edição de anúncios
-│   ├── negotiationHandler.js # Fluxo de negociação e escrow
-│   ├── ticketHandler.js      # Sistema de tickets
-│   ├── salesHandler.js       # Conclusão de vendas
-│   ├── pixVerificationHandler.js  # Verificação de Pix
-│   ├── staffHandler.js       # Moderação e painel staff
-│   ├── meusAnunciosHandler.js     # Painel pessoal
-│   ├── favoritosHandler.js   # Favoritos
-│   ├── alertasHandler.js     # Alertas de preço
-│   └── commandHandler.js     # Roteador de comandos
-├── utils/
-│   ├── database.js           # SQLite com migrations e prepared statements
-│   ├── embedBuilder.js       # Builders de embed e Components v2
-│   ├── cv2.js                # Helpers para Components v2
-│   ├── scheduler.js          # Tarefas agendadas
-│   ├── backup.js             # Backup automático do banco
-│   ├── healthcheck.js        # Servidor HTTP de healthcheck
-│   ├── minecraftAPI.js       # Integração com API do Minecraft
-│   ├── pagination.js         # Paginação de listagens
-│   ├── transcript.js         # Transcrição de tickets
-│   ├── cooldown.js           # Sistema de cooldown
-│   └── logger.js             # Logger estruturado
-└── events/
-    ├── ready.js              # Evento de inicialização
-    └── interactionCreate.js  # Roteador de interações
-## Autor
+GET http://localhost:3000/health
+```
 
-**K4NAE** — [github.com/the-k4nae](https://github.com/the-k4nae)
+---
+
+## ❓ Primeiro uso — passo a passo
+
+1. Crie os 5 canais listados acima no servidor
+2. Preencha o `.env` com todos os IDs
+3. `npm install && npm start`
+4. `/setuppainel #seu-canal`
+5. Pronto!

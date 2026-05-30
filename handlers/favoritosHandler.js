@@ -11,18 +11,20 @@
  */
 
 import {
-  ActionRowBuilder, ButtonBuilder, ButtonStyle,
-  EmbedBuilder, MessageFlags,
+  ButtonStyle, MessageFlags,
 } from "discord.js"
 import {
   addFavorite, removeFavorite, isFavorited,
   getUserFavorites, countFavoriters, getAnnouncement,
-  addLog,
+  addLog, getFavoriters,
 } from "../utils/database.js"
-import { COLORS, formatValor, buildFavoritosPanelC2 } from "../utils/embedBuilder.js"
-import { box, C2_FLAG, C2_EPHEMERAL } from "../utils/cv2.js"
+import {
+  CV2_EPHEMERAL, container, text, separator, section, thumbnail,
+  createRow, createButton, formatValor, COLORS,
+} from "../utils/components.js"
 import { getSkinUrls } from "../utils/minecraftAPI.js"
 import { checkCooldown } from "../utils/cooldown.js"
+import { fileLog } from "../utils/fileLogger.js"
 
 // ─────────────────────────────────────────────
 // BOTÃO FAVORITAR / DESFAVORITAR
@@ -63,6 +65,26 @@ export async function handleFavoriteButton(interaction, params, client) {
 
     addLog("favorite_added", interaction.user.id, String(announcementId))
     const count = countFavoriters(announcementId)
+
+    // ── Notificar vendedor por DM ────────────────────────────────────────
+    try {
+      const seller = await client.users.fetch(announcement.user_id)
+      const dmC = container(0xFF69B4)
+        .addTextDisplayComponents(
+          text(
+            `## ❤️ Alguém favoritou seu anúncio!\n` +
+            `Um usuário adicionou sua conta **${announcement.nick}** aos favoritos.\n` +
+            `Isso significa que ele tem interesse — fique atento ao canal de anúncios!\n\n` +
+            `**Conta:** ${announcement.nick}\n` +
+            `**Valor:** R$ ${formatValor(announcement.valor)}\n` +
+            `**Total de favoritos:** ${count} pessoa(s)\n\n` +
+            `-# Use /meusanuncios para gerenciar seu anúncio`
+          )
+        )
+      await seller.send({ components: [dmC] })
+    } catch { /* DM fechada */ }
+    // ────────────────────────────────────────────────────────────────────
+
     return interaction.editReply({
       content: `❤️ **${announcement.nick}** adicionado aos seus favoritos!\nUse \`/meufavoritos\` para ver todos.\n\`${count} pessoa(s) favoritaram este anúncio\``,
     })
@@ -97,10 +119,13 @@ export async function handleMeusFavoritosCommand(interaction, client) {
   const favorites = getUserFavorites(interaction.user.id)
 
   if (!favorites.length) {
-    return interaction.editReply({
-      components: [box("## ❤️ Meus Favoritos\n\nVocê não tem nenhum anúncio favoritado.\n\nClique no botão **❤️ Favoritar** em qualquer anúncio para salvar aqui.\n\n-# Use /meufavoritos para ver seus favoritos", 0x7289DA)],
-      flags: C2_EPHEMERAL,
-    })
+    const c = container(COLORS.INFO)
+      .addTextDisplayComponents(
+        text(
+          `## ❤️ Meus Favoritos\nVocê não tem nenhum anúncio favoritado.\n\nClique no botão **❤️ Favoritar** em qualquer anúncio para salvar aqui.\n\n-# Use /meufavoritos para ver seus favoritos`
+        )
+      )
+    return interaction.editReply({ flags: CV2_EPHEMERAL, components: [c] })
   }
 
   await sendFavoritesPage(interaction, favorites, 0)
@@ -113,64 +138,48 @@ async function sendFavoritesPage(interaction, favorites, page) {
   const available = favorites.filter(f => f.status === "approved").length
   const sold      = favorites.filter(f => f.status === "sold").length
 
-  const favLines = slice.map((fav, i) => {
-    const emoji  = STATUS_EMOJI[fav.status] ?? "❓"
-    const status = STATUS_LABEL[fav.status] ?? fav.status
-    const price  = `R$ ${formatValor(fav.valor)}`
-    const when   = `<t:${Math.floor(new Date(fav.created_at).getTime() / 1000)}:R>`
-    return `**${page * PAGE_SIZE + i + 1}.** ${emoji} **${fav.nick}** — ${price}\n> Status: ${status} · Favoritado ${when}`
-  }).join("\n\n")
-  const favContent =
-    `## ❤️ Meus Favoritos (${favorites.length})\n\n` +
-    `🟢 **${available}** disponível(is) · 🔴 **${sold}** vendido(s)\n\n` +
-    favLines +
-    `\n\n-# Página ${page + 1}/${totalPages} · ${favorites.length} favorito(s) no total`
+  let listText = `🟢 **${available}** disponível(is) · 🔴 **${sold}** vendido(s)\n\n` +
+    slice.map((fav, i) => {
+      const emoji  = STATUS_EMOJI[fav.status] ?? "❓"
+      const status = STATUS_LABEL[fav.status] ?? fav.status
+      const price  = `R$ ${formatValor(fav.valor)}`
+      const when   = `<t:${Math.floor(new Date(fav.created_at).getTime() / 1000)}:R>`
+      return `**${page * PAGE_SIZE + i + 1}.** ${emoji} **${fav.nick}** — ${price}\n> Status: ${status} · Favoritado ${when}`
+    }).join("\n\n")
 
-  const rows = []
+  const c = container(COLORS.GOLD)
+  c.addTextDisplayComponents(
+    text(`## ❤️ Meus Favoritos (${favorites.length})\n${listText}\n\n-# Página ${page + 1}/${totalPages} · ${favorites.length} favorito(s) no total`)
+  )
 
   // Botões de detalhes para cada anúncio da página
   if (slice.length) {
-    const detailRow = new ActionRowBuilder().addComponents(
-      ...slice.map((fav, i) =>
-        new ButtonBuilder()
-          .setCustomId(`fav_detail_${fav.announcement_id}_${page}`)
-          .setLabel(`${page * PAGE_SIZE + i + 1}. ${fav.nick.substring(0, 10)}`)
-          .setStyle(fav.status === "approved" ? ButtonStyle.Success : ButtonStyle.Secondary)
-          .setDisabled(fav.status !== "approved")
+    c.addActionRowComponents(
+      createRow(
+        ...slice.map((fav, i) =>
+          createButton({
+            customId: `fav_detail_${fav.announcement_id}_${page}`,
+            label: `${page * PAGE_SIZE + i + 1}. ${fav.nick.substring(0, 10)}`,
+            style: fav.status === "approved" ? ButtonStyle.Success : ButtonStyle.Secondary,
+            disabled: fav.status !== "approved",
+          })
+        )
       )
     )
-    rows.push(detailRow)
   }
 
   // Paginação
+  const navButtons = []
   if (totalPages > 1) {
-    const navRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`fav_page_${page - 1}`)
-        .setLabel("◀ Anterior")
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(page === 0),
-      new ButtonBuilder()
-        .setCustomId(`fav_page_${page + 1}`)
-        .setLabel("Próxima ▶")
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(page >= totalPages - 1),
-      new ButtonBuilder()
-        .setCustomId("fav_refresh")
-        .setLabel("🔄 Atualizar")
-        .setStyle(ButtonStyle.Primary),
+    navButtons.push(
+      createButton({ customId: `fav_page_${page - 1}`, label: "◀ Anterior", style: ButtonStyle.Secondary, disabled: page === 0 }),
+      createButton({ customId: `fav_page_${page + 1}`, label: "Próxima ▶", style: ButtonStyle.Secondary, disabled: page >= totalPages - 1 }),
     )
-    rows.push(navRow)
-  } else {
-    rows.push(new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("fav_refresh")
-        .setLabel("🔄 Atualizar")
-        .setStyle(ButtonStyle.Primary),
-    ))
   }
+  navButtons.push(createButton({ customId: "fav_refresh", label: "🔄 Atualizar", style: ButtonStyle.Primary }))
+  c.addActionRowComponents(createRow(...navButtons))
 
-  await interaction.editReply({ components: [appendRows(buildFavoritosPanelC2(interaction.user, favorites), ...rows)], flags: C2_FLAG })
+  await interaction.editReply({ flags: CV2_EPHEMERAL, components: [c] })
 }
 
 // ─────────────────────────────────────────────
@@ -209,30 +218,33 @@ export async function handleFavoriteDetail(interaction, params, client) {
   const skin = getSkinUrls(announcement.uuid ?? announcement.nick)
   const favCount = countFavoriters(announcementId)
 
-  const detailContent =
-    `## ❤️ ${announcement.nick}\n\n` +
-    `Anúncio **#${announcement.id}** — favoritado por **${favCount}** pessoa(s)\n\n` +
-    `💰 **Valor:** R$ ${formatValor(announcement.valor)}   🔨 **Bans:** ${announcement.bans || "Não informado"}\n` +
-    `🎭 **Capas:** ${announcement.capas || "Nenhuma"}   ⭐ **VIPs:** ${announcement.vips || "Nenhum"}\n` +
-    `🏷️ **Tags:** ${announcement.tags || "Nenhuma"}   🏆 **Cosméticos:** ${announcement.cosmeticos || "Nenhum"}\n\n` +
-    `-# Anúncio #${announcement.id}`
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`interest_${announcementId}`)
-      .setLabel("🤝 Tenho Interesse")
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId(`fav_toggle_${announcementId}`)
-      .setLabel("💔 Desfavoritar")
-      .setStyle(ButtonStyle.Danger),
-    new ButtonBuilder()
-      .setCustomId(`fav_page_${page}`)
-      .setLabel("↩ Voltar")
-      .setStyle(ButtonStyle.Secondary),
+  const c = container(COLORS.GOLD)
+  c.addSectionComponents(
+    section(
+      `## ❤️ ${announcement.nick}\nAnúncio **#${announcement.id}** — favoritado por **${favCount}** pessoa(s)`,
+      thumbnail(skin.avatar, announcement.nick)
+    )
+  )
+  c.addSeparatorComponents(separator())
+  c.addTextDisplayComponents(
+    text(
+      `💰 **Valor:** R$ ${formatValor(announcement.valor)}\n` +
+      `🔨 **Banimentos:** ${announcement.bans || "Não informado"}\n` +
+      `🎭 **Capas:** ${announcement.capas || "Nenhuma"}\n` +
+      `⭐ **VIPs:** ${announcement.vips || "Nenhum"}\n` +
+      `🏷️ **Tags:** ${announcement.tags || "Nenhuma"}\n` +
+      `🏆 **Cosméticos:** ${announcement.cosmeticos || "Nenhum"}`
+    )
+  )
+  c.addActionRowComponents(
+    createRow(
+      createButton({ customId: `interest_${announcementId}`, label: "🤝 Tenho Interesse", style: ButtonStyle.Success }),
+      createButton({ customId: `fav_toggle_${announcementId}`, label: "💔 Desfavoritar", style: ButtonStyle.Danger }),
+      createButton({ customId: `fav_page_${page}`, label: "↩ Voltar", style: ButtonStyle.Secondary }),
+    )
   )
 
-  await interaction.editReply({ components: [box(detailContent, 0xFFD700), ...(row ? [row] : [])], flags: C2_EPHEMERAL })
+  await interaction.editReply({ flags: CV2_EPHEMERAL, components: [c] })
 }
 
 // ─────────────────────────────────────────────
@@ -241,36 +253,35 @@ export async function handleFavoriteDetail(interaction, params, client) {
 // ─────────────────────────────────────────────
 
 export async function notifyFavoritersOnBump(client, announcement) {
-  const { getFavoriters } = await import("../utils/database.js")
   const favoriters = getFavoriters(announcement.id)
   if (!favoriters.length) return
 
-  const embed = new EmbedBuilder()
-    .setColor(COLORS.GOLD)
-    .setTitle("🔔 Anúncio Favoritado Atualizado!")
-    .setDescription(
-      `O anúncio de **${announcement.nick}** que você favoritou acaba de ser bumped!\n` +
-      `Ele está no topo do canal de anúncios agora.`
+  const skin = getSkinUrls(announcement.uuid ?? announcement.nick)
+
+  const dmC = container(COLORS.GOLD)
+    .addSectionComponents(
+      section(
+        `## 🔔 Anúncio Favoritado Atualizado!\n` +
+        `O anúncio de **${announcement.nick}** que você favoritou acaba de ser bumped!\n` +
+        `Ele está no topo do canal de anúncios agora.\n\n` +
+        `💰 **Valor:** R$ ${formatValor(announcement.valor)}\n` +
+        `📢 **Canal:** <#${client.config.channels.anuncios}>\n\n` +
+        `-# Use /meufavoritos para ver todos os seus favoritos`,
+        thumbnail(skin.avatar, announcement.nick)
+      )
     )
-    .addFields(
-      { name: "💰 Valor", value: `R$ ${formatValor(announcement.valor)}`, inline: true },
-      { name: "📢 Canal", value: `<#${client.config.channels.anuncios}>`, inline: true },
-    )
-    .setThumbnail(getSkinUrls(announcement.uuid ?? announcement.nick).avatar)
-    .setFooter({ text: "Use /meufavoritos para ver todos os seus favoritos" })
-    .setTimestamp()
 
   let notified = 0
   for (const userId of favoriters) {
     try {
       const user = await client.users.fetch(userId)
-      await user.send({ embeds: [embed] })
+      await user.send({ components: [dmC] })
       notified++
     } catch { /* DM fechada */ }
   }
 
   if (notified > 0)
-    console.log(`[FAVORITOS] ${notified} usuário(s) notificado(s) do bump de #${announcement.id} (${announcement.nick})`)
+    fileLog.info({ notified, announcementId: announcement.id, nick: announcement.nick }, "[FAVORITOS] bump DMs sent")
 }
 
 // ─────────────────────────────────────────────
@@ -279,7 +290,6 @@ export async function notifyFavoritersOnBump(client, announcement) {
 // ─────────────────────────────────────────────
 
 export async function notifyFavoritersOnPriceDrop(client, announcement, oldValor) {
-  const { getFavoriters } = await import("../utils/database.js")
   const favoriters = getFavoriters(announcement.id)
   if (!favoriters.length) return
 
@@ -288,27 +298,25 @@ export async function notifyFavoritersOnPriceDrop(client, announcement, oldValor
   if (newPrice >= oldPrice) return // não é baixa
 
   const drop = ((oldPrice - newPrice) / oldPrice * 100).toFixed(0)
+  const skin = getSkinUrls(announcement.uuid ?? announcement.nick)
 
-  const embed = new EmbedBuilder()
-    .setColor(COLORS.SUCCESS)
-    .setTitle("📉 Baixa de Preço em Anúncio Favoritado!")
-    .setDescription(
-      `O anúncio de **${announcement.nick}** que você favoritou teve uma **baixa de preço de ${drop}%**!`
+  const dmC = container(COLORS.SUCCESS)
+    .addSectionComponents(
+      section(
+        `## 📉 Baixa de Preço em Anúncio Favoritado!\n` +
+        `O anúncio de **${announcement.nick}** que você favoritou teve uma **baixa de preço de ${drop}%**!\n\n` +
+        `~~R$ ${formatValor(oldPrice)}~~ → **R$ ${formatValor(newPrice)}**\n` +
+        `Economia: R$ ${formatValor(oldPrice - newPrice)} (${drop}% menos)\n` +
+        `📢 **Canal:** <#${client.config.channels.anuncios}>\n\n` +
+        `-# Use /meufavoritos para ver todos os seus favoritos`,
+        thumbnail(skin.avatar, announcement.nick)
+      )
     )
-    .addFields(
-      { name: "Preço Anterior", value: `~~R$ ${formatValor(oldPrice)}~~`, inline: true },
-      { name: "Novo Preço",     value: `**R$ ${formatValor(newPrice)}**`,  inline: true },
-      { name: "Economia",       value: `R$ ${formatValor(oldPrice - newPrice)} (${drop}% menos)`, inline: true },
-      { name: "Canal",          value: `<#${client.config.channels.anuncios}>`, inline: false },
-    )
-    .setThumbnail(getSkinUrls(announcement.uuid ?? announcement.nick).avatar)
-    .setFooter({ text: "Use /meufavoritos para ver todos os seus favoritos" })
-    .setTimestamp()
 
   for (const userId of favoriters) {
     try {
       const user = await client.users.fetch(userId)
-      await user.send({ embeds: [embed] })
+      await user.send({ components: [dmC] })
     } catch { /* DM fechada */ }
   }
 }
@@ -319,8 +327,9 @@ export async function notifyFavoritersOnPriceDrop(client, announcement, oldValor
  * @param {string|null} userId - se fornecido, indica se já está favoritado
  */
 export function buildFavoriteButton(announcementId, alreadyFaved = false) {
-  return new ButtonBuilder()
-    .setCustomId(`fav_toggle_${announcementId}`)
-    .setLabel(alreadyFaved ? "💔 Desfavoritar" : "❤️ Favoritar")
-    .setStyle(alreadyFaved ? ButtonStyle.Danger : ButtonStyle.Secondary)
+  return createButton({
+    customId: `fav_toggle_${announcementId}`,
+    label: alreadyFaved ? "💔 Desfavoritar" : "❤️ Favoritar",
+    style: alreadyFaved ? ButtonStyle.Danger : ButtonStyle.Secondary,
+  })
 }
